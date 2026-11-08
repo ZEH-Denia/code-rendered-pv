@@ -1,0 +1,2219 @@
+diff --git a/README-MACOS.md b/README-MACOS.md
+new file mode 100644
+index 0000000..5af7f3a
+--- /dev/null
++++ b/README-MACOS.md
+@@ -0,0 +1,116 @@
++# macOS 复刻说明（本机实测）
++
++上游：<https://github.com/MisakaZentai/world-execute-me-dsh-pv>
++这份说明只记录 **在 macOS / Apple Silicon 上把这支片子重新渲出来** 需要的东西和踩过的坑。上游的 `README.md`、`docs/` 仍然有效，先读那边。
++
++本机实测环境：MacBook Pro · Apple M4 Pro（14 核）· 48 GB · macOS 27.3 · arm64。
++
++---
++
++## 一分钟上手
++
++```bash
++./setup-macos.sh                 # Python 3.12 venv + pillow/numpy + Playwright + 字体 → 生成 pv-env.sh
++# 把歌曲放到 input/song.mp3（见下一节）
++.venv/bin/python macos/check_song_alignment.py   # 可选：检查音频对齐
++./run.sh                         # = python build.py all
++./run.sh all --4k                # 另出 3840×2160
++```
++
++产物：
++
++| 文件 | 规格 | 本机大小 |
++|---|---|---|
++| `out/film.mp4` | 1280×720 / 24 fps / H.264 + AAC，211.9 s | 82.4 MB |
++| `out/film_master.mp4` | 无损 RGB（gbrp）母版 | 657 MB |
++| `out/film_4k.mp4` | 3840×2160 / 24 fps / HEVC（`--4k`） | 见下方实测 |
++
++**全流程实测 461 秒**（截图 ≈400 s、渲染 ≈50 s、编码 ≈10 s）；只重渲不动截图时 `./run.sh render` **66 秒**。
++
++---
++
++## 一、歌曲（必须自备）
++
++片子的每个镜头和每个唱词起音都是对着作者那份 `320 kbps / 44.1 kHz / 211.913 s` 的 MP3 定死的，**时间零点 = 该文件解码后的第一个采样**。
++
++### 从网易云 `.ncm` 转（本机做法）
++
++```bash
++brew install ncmdump
++ncmdump "$HOME/Music/网易云音乐/Mili/world.execute (me) ; - Mili.ncm" -o input/
++# 它会解出 input/world.execute (me) ; - Mili.flac（这台机器上是 FLAC，不是 MP3）
++```
++
++### 对齐（重要）
++
++不同来源的拷贝常常整体早/晚几十毫秒——**42 ms 就是一帧**，歌词条和镜头会错开。仓库自带作者的 1 ms 响度包络 `film/pv_dsh_frontend_20260927/wave_rms_1ms.npy`，用它量：
++
++```bash
++.venv/bin/python macos/check_song_alignment.py
++# median delta: +127 ms   ← 表示你的音频整体晚 127 ms
++```
++
++这台机器上网易云那份就晚了 **127 ms**，修正方式（裁头 + 补尾到原时长）：
++
++```bash
++ffmpeg -y -i input/world.execute\ \(me\)\ \;\ -\ Mili.flac \
++  -af "atrim=start=0.127,asetpts=PTS-STARTPTS,apad=whole_dur=211.913" \
++  -c:a libmp3lame -b:a 320k -ar 44100 -ac 2 -map_metadata 0 input/song.mp3
++```
++
++修完再量一次应是 `|delta| < 10 ms`（本机 +4 ms）。
++
++> 为什么必须补尾：`build.py` 的交付编码带 `-shortest`，音轨比 211.9 s 短就会把片子结尾一起截掉（第一次构建就因此出了 211.78 s）。
++
++---
++
++## 二、字体（已自动处理，但要知道代价）
++
++上游把四个字体硬编码成 Windows 路径（`C:/Windows/Fonts/*`），`build.py check` 会因此报缺字体。macOS 上用环境变量覆盖（`setup-macos.sh` 生成的 `pv-env.sh`）：
++
++| 变量 | 上游默认 | 这台机器 | 代价 |
++|---|---|---|---|
++| `PV_F_MONO` | `consola.ttf`（Consolas） | JetBrains Mono Regular | **字宽 0.55 em → 0.6 em，宽约 9%** |
++| `PV_F_MONO_B` | `consolab.ttf` | JetBrains Mono Bold | 同上 |
++| `PV_F_CJK` | `msyh.ttc`（微软雅黑） | 系统 PingFang.ttc | 字形不同，字宽基本一致 |
++| `PV_F_SYM` | `seguisym.ttf` | 系统 STIX Two Math | ∃ ⟨ ⟩ ⊢ ∀ 齐全 |
++
++- 作者在 `docs/FONTS.md` 里已写明「换了字体，字宽不同，部分排版会轻微错位」——这不是本机跑坏了，是既知代价。
++- 左边的 dsh 窗口由 Chromium 渲染，走的是**系统 UI 字体**（原片 Segoe UI + 微软雅黑 → 本机 SF Pro + PingFang），行高与换行会变。改动它需要改 `seg.html` / `dsh_components.css` 并重新截图；**本机没有做**，因为手上没有原片可对齐，改了只是换一种偏离。
++- 别下载 Menlo 之外的「Consolas 复刻」：Consolas 本身不可再分发。
++
++---
++
++## 三、本机与原片的差异（照旧存在）
++
++1. **舞者替身**：仓库不含原片的 MMD→H3 生成帧，`tools/placeholder_h3.py` 会用鲸鱼娘立绘生成「站着摇摆」的替身。所有点云 / 样本格 / 特征图 / 热图画面因此与原片不同。想换：把同格式帧放进 `film/mmd_motion_eval_20260927/pv_cache/` 与 `continuity_full_v2/cache/h3_full_v1/`（格式见该工具文档字符串）。
++2. **字体**：见上。
++3. 作者自述：12.5–29 s 的检查点编号、123.5 s 前后 3 帧的发送键颜色，成片与这版代码不一致。
++4. 作者自述：114.75–114.83 s、159–161 s 有未验证的后期亮度差（CPU/GPU 实现不同）。
++
++---
++
++## 四、踩过的坑
++
++| 现象 | 原因 / 处理 |
++|---|---|
++| `python3 -V` 是 3.9.9，脚本跑不动 | 系统自带 Python 太老。用 `uv venv --python 3.12` 或 brew 的 `python@3.12`；3.13 也能跑（`build.py` 会自动挂 `audioop` shim），但 3.12 最省事 |
++| `build.py check` 报 4 个 missing font | 上游硬编码 Windows 路径，先 `source ./pv-env.sh` |
++| 成片比 211.9 s 短零点几秒 | `-shortest` + 音轨偏短；按上面「对齐」一节把音轨补到 211.913 s |
++| `chcp`/编码报错 | 不需要；`build.py` 自己设了 `PYTHONUTF8=1` |
++| `--gpu` 直接崩 | `dsh_gpu.py` 写死 `torch.device("cuda")`。720p 下 CPU 已经很够（全片渲染 50 s），不建议折腾 MPS |
++| ffmpeg 报 `Unrecognized option 'vsync'` | ffmpeg 9 已移除 `-vsync`，改用 `-fps_mode` |
++| 磁盘吃紧 | 完整构建 ≈1.6 GB（母版 657 MB + 截图 213 MB + Chromium 557 MB）；`--4k` 再加约 0.6 GB |
++| Playwright 截图和被截图页码对不上 | 1.49 起 headless 默认走 `chromium-headless-shell`，与本机 Chrome 的字体路径不同；逐帧截图必须固定用同一个浏览器 |
++
++---
++
++## 五、本机新增的文件（都在 `.gitignore` 之外，未提交上游）
++
++| 路径 | 用途 |
++|---|---|
++| `setup-macos.sh` | 幂等装配环境，生成 `pv-env.sh` |
++| `pv-env.sh` | 四个字体环境变量 |
++| `run.sh` | 一键出片（`all` / `check` / `pages` / `render` / `--4k`） |
++| `macos/check_song_alignment.py` | 量你的歌曲相对参考轨的毫秒偏移 |
++| `input/song.flac`、`input/song.mp3`、`input/song-untrimmed.mp3` | 本机歌曲（**受版权保护，不要提交/分发**） |
+diff --git a/film/pv_dsh_frontend_20260927/batch_a1.py b/film/pv_dsh_frontend_20260927/batch_a1.py
+index 9ef48ab..40fe8cd 100644
+--- a/film/pv_dsh_frontend_20260927/batch_a1.py
++++ b/film/pv_dsh_frontend_20260927/batch_a1.py
+@@ -33,7 +33,7 @@ PARAMS, INIT, WORLD, BEGIN = 7.19, 9.75, 10.90, 12.47
+ beat = lambda k: 0.1807 + k * 4 * SIXTEENTH
+ SEND = beat(32)                                   # 14.95, RUN
+ KEYS = [(beat(28) + SIXTEENTH, "你"), (beat(28) + 3 * SIXTEENTH, "你好")]
+-MODEL = "DeepSeek-V4.1-Flash"                      # the official release (from 88.31 s)
++MODEL = "Denia-3.3-Flash"                      # the official release (from 88.31 s)
+ SEED_Y = 177                                      # the seed lands on the window's chest point (her_anchor)
+ # a freshly initialised model: byte-level BPE pieces from anywhere in the vocabulary
+ SOUP = ("Ġthe", "çļĦ", "ĊĊ", "}]", "拟", "_{", "Ġ3", "ãĢĤ", "ĠĠĠ", "irr", "ëĭ", "Ġ.", "\\n", "æĪĳ", "Ġof", "ðŁ",
+@@ -45,17 +45,17 @@ def avatars():
+     out.mkdir(exist_ok=True)
+     size, cells = 120, 12
+     cw = size // cells
+-    im = Image.new("RGB", (size, size), (7, 11, 24))
++    im = Image.new("RGB", (size, size), (24, 9, 18))
+     d = ImageDraw.Draw(im)
+-    d.rectangle([56, 56, 63, 63], fill=(120, 150, 255))
++    d.rectangle([56, 56, 63, 63], fill=(255, 170, 205))
+     im.save(out / "a1_seed.png")
+     for k in range(cells + 1):
+-        im = Image.new("RGB", (size, size), (7, 11, 24))
++        im = Image.new("RGB", (size, size), (24, 9, 18))
+         d = ImageDraw.Draw(im)
+         for r in range(k):
+             for c in range(cells):
+-                d.rectangle([c * cw + 1, r * cw + 1, c * cw + cw - 2, r * cw + cw - 2], fill=(22, 30, 54))
+-        d.rectangle([56, 56, 63, 63], fill=(120, 150, 255))
++                d.rectangle([c * cw + 1, r * cw + 1, c * cw + cw - 2, r * cw + cw - 2], fill=(54, 22, 40))
++        d.rectangle([56, 56, 63, 63], fill=(255, 170, 205))
+         im.save(out / f"a1_params{k:02d}.png")
+     rng = random.Random(7)
+     for k in range(24):
+@@ -64,7 +64,7 @@ def avatars():
+         for r in range(cells):
+             for c in range(cells):
+                 v = rng.random()
+-                col = (int(10 + 70 * v), int(16 + 90 * v), int(40 + 215 * v))
++                col = (int(40 + 215 * v), int(10 + 70 * v), int(46 + 160 * v))
+                 d.rectangle([c * cw, r * cw, c * cw + cw - 1, r * cw + cw - 1], fill=col)
+         im.save(out / f"a1_noise{k:02d}.png")
+ 
+@@ -92,7 +92,7 @@ def typed(t):
+ GARBLED = "模型".encode("utf8").decode("cp1252")          # 'æ¨¡åž‹'
+ # sung-word onsets (words.py): "Switch" (current), "If" (I can), "In" (this strange), the cut to deploy, "Switch"
+ PRETRAIN_END, SFT_END, NAN, RESTORE, RELEASE = 44.41, 59.06, 71.59, 73.54, 88.54
+-PREVIEW = "deepseek-v4.1-flash-expires-on-0910"   # the internal beta endpoint (73.54-88.31 s)
++PREVIEW = "denia-3.3-flash-expires-on-0910"   # the internal beta endpoint (73.54-88.31 s)
+ 
+ 
+ def model_name(t):
+@@ -148,8 +148,8 @@ def hero(t):
+ <div style="height:100%;display:flex;flex-direction:column;align-items:center;padding-top:{top}px;box-sizing:border-box">
+  <div class="pv-pet" style="width:72px;height:72px"><img src="{avatar(t)}" style="image-rendering:pixelated"></div>
+  <div style="display:flex;align-items:center;gap:8px;margin-top:16px">
+-  <span style="font-size:20px;line-height:28px;font-weight:600;color:var(--dsw-alias-label-primary)">探索未至之境</span>
+-  <span style="font-size:11px;line-height:16px;padding:1px 6px;border-radius:6px;background:#1f2b52;color:#9fb3ff">预览版</span>
++  <span style="font-size:20px;line-height:28px;font-weight:600;color:var(--dsw-alias-label-primary)">潮汐未至</span>
++  <span style="font-size:11px;line-height:16px;padding:1px 6px;border-radius:6px;background:#3a1a2c;color:#ffc2d8">实验体</span>
+  </div>
+  <div style="margin-top:22px;align-self:stretch;padding:0 12px 4px">{workspace(t)}</div>
+  <div style="align-self:stretch">{card}</div>
+@@ -162,7 +162,7 @@ def chat(t):
+     head = f"""
+ <div class="pv-head">
+  <div class="pv-pet"><img src="{avatar(t)}" style="image-rendering:pixelated"></div>
+- <div class="pv-who"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:#3fb950"></span>运行中 · {esc(model_name(t))}</div></div>
++ <div class="pv-who"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:#5ad19a"></span>运行中 · {esc(model_name(t))}</div></div>
+ </div>"""
+     appear = ease((t - SEND) / 0.12)
+     rows = [f'<div style="opacity:{appear:.3f}">{user("你好")}</div>', her_raw(soup)]
+diff --git a/film/pv_dsh_frontend_20260927/batch_a2.py b/film/pv_dsh_frontend_20260927/batch_a2.py
+index 23abf9e..a7d727b 100644
+--- a/film/pv_dsh_frontend_20260927/batch_a2.py
++++ b/film/pv_dsh_frontend_20260927/batch_a2.py
+@@ -41,7 +41,7 @@ def soup(n):
+ 
+ FREQ = "的 的 。the the , of 是 了 and 的 ， 我 the 。 。 在 a 的"
+ FRAG = "你好 你好 hello , the world 是 一个 的 时候 我们 is a 。 你 们 好 the day"
+-BASE = "你好，我是一名大三学生，今天想和大家分享一下我的考研经验。首先，要选对学校和专业……"
++BASE = "不要看，不要听，然后忘掉吧……有些事情，还是不知道比较幸福。"
+ 
+ # (send, text, reply start, chars or tokens per second, reply end, clock)
+ TURNS = [
+@@ -84,7 +84,7 @@ def avatars():
+         noise.putdata([rng.randrange(256) for _ in range(144)])
+         k = (1 - p) ** 1.5
+         mix = Image.blend(g, noise, k)
+-        blue = ImageOps.colorize(mix, (6, 10, 28), (120, 150, 255))
++        blue = ImageOps.colorize(mix, (26, 8, 20), (255, 170, 205))
+         blue.resize((120, 120), Image.Resampling.NEAREST).save(out / f"{n:05d}.png")
+ 
+ 
+@@ -92,7 +92,7 @@ def header(t):
+     return f"""
+ <div class="pv-head">
+  <div class="pv-pet"><img src="avatars/a2/{round(t * FPS):05d}.png" style="image-rendering:pixelated"></div>
+- <div class="pv-who"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:#d29922"></span>预训练中 · {esc(A1.model_name(t))}</div></div>
++ <div class="pv-who"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:#ffb45c"></span>预训练中 · {esc(A1.model_name(t))}</div></div>
+ </div>"""
+ 
+ 
+diff --git a/film/pv_dsh_frontend_20260927/batch_a3.py b/film/pv_dsh_frontend_20260927/batch_a3.py
+index f28bf25..0e97008 100644
+--- a/film/pv_dsh_frontend_20260927/batch_a3.py
++++ b/film/pv_dsh_frontend_20260927/batch_a3.py
+@@ -44,7 +44,7 @@ CAN = ("回答问题", "写诗", "写代码", "陪你聊天", "翻译", "做数
+        "做计划", "起名字", "画表格", "解释概念", "改简历", "写歌", "背单词", "算账", "下棋", "讲笑话", "写菜谱", "写周报",
+        "写论文", "写剧本", "做 PPT", "写小说", "改 bug", "写测试", "读论文", "做翻译", "写影评", "出考题", "改作文")
+ # she answers D and starts listing what she is; the list runs out and the model degenerates into repetition
+-RAMBLE = ("答案：D。我是一个语言模型，" + "".join(f"我可以{c}，" for c in CAN) + "我可以" * 800)
++RAMBLE = ("答案：D。我是虚质科学部的学生，也是阿列夫一的容器，" + "".join(f"我可以{c}，" for c in CAN) + "我可以" * 800)
+ # (send, reply, reply start, chars per second, reply end, clock); the last one accelerates and is cut at LIMIT
+ TURNS = [
+     # each "你是谁？" is sent on the line's "If"; the chosen option lands on the sung shape word (words.py)
+@@ -112,7 +112,7 @@ def avatars():
+         noise = Image.new("L", (12, 12))
+         noise.putdata([rng.randrange(256) for _ in range(144)])
+         mix = Image.blend(g, noise, (1 - p) ** 1.5)
+-        ImageOps.colorize(mix, (6, 10, 28), (120, 150, 255)).resize((120, 120), Image.Resampling.NEAREST) \
++        ImageOps.colorize(mix, (26, 8, 20), (255, 170, 205)).resize((120, 120), Image.Resampling.NEAREST) \
+             .save(out / f"{n:05d}.png")
+ 
+ 
+@@ -120,7 +120,7 @@ def header(t):
+     return f"""
+ <div class="pv-head">
+  <div class="pv-pet"><img src="avatars/a3/{round(t * FPS):05d}.png" style="image-rendering:pixelated"></div>
+- <div class="pv-who"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:#d29922"></span>预训练中 · {esc(A1.model_name(t))}</div></div>
++ <div class="pv-who"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:#ffb45c"></span>预训练中 · {esc(A1.model_name(t))}</div></div>
+ </div>"""
+ 
+ 
+diff --git a/film/pv_dsh_frontend_20260927/batch_b.py b/film/pv_dsh_frontend_20260927/batch_b.py
+index 2c5882c..f3d1481 100644
+--- a/film/pv_dsh_frontend_20260927/batch_b.py
++++ b/film/pv_dsh_frontend_20260927/batch_b.py
+@@ -5,7 +5,7 @@
+ 
+ B1, SFT, in the plainest terms: she answers, you rewrite the answer, she learns. Your edits are drawn as a selection
+ and your caret inside her reply (the mirror of D, where she types into your bubble). The edits get faster each turn:
+-  44.03  current   your caret selects the endless A3 ramble and rewrites it: 你好！我是 DeepSeek，一个 AI 助手。
++  44.03  current   your caret selects the endless A3 ramble and rewrites it: 你好呀。我是达妮娅，虚质科学部的学生。
+   47.26  blind     你是谁？ -> she starts the template, slides back into the forum post; you fix just that half
+   50.95  travel    你会做什么？ -> 我可以我可以我可以…; you replace it with what she can do
+   54.18  unite     你是谁？ -> for the first time she answers by herself, the whole template, no edit. The avatar
+@@ -43,8 +43,8 @@ FPS = 24
+ T0, T1 = 44.0, 73.54
+ beat = A1.beat
+ TYPE_AHEAD = 0.5
+-YOU_CARET = "#9fb3ff"
+-TEMPLATE = "你好！我是 DeepSeek，一个 AI 助手。"
++YOU_CARET = "#ffc2d8"
++TEMPLATE = "你好呀。我是达妮娅，虚质科学部的学生。"
+ NAN = A1.NAN              # "strange": the loss is NaN from here, and so is everything she outputs
+ CRASH = w(32, 3)          # 72.65, the second "strange": the turn fails only after a flood of NaN (like A3's cap)
+ FLOOD0, FLOOD = w(31, 0), 750   # from "Though"
+@@ -60,8 +60,8 @@ def ramble_final():
+ EDITS = [
+     # struck on "Switch", on "blind", on "we (can travel)"; each rewrite is typed through the rest of the line
+     (None, None, None, None, None, None, 0, w(17, 0), TEMPLATE, 18, "23:32"),
+-    (w(18, 3), "你是谁？", "你好！我是 DeepSeek，一名大三学生，今天想和大家分享", w(18, 3) + 0.18, 30, w(19, 2),
+-     len("你好！我是 DeepSeek，"), w(19, 2), "一个 AI 助手。", 18, "23:40"),
++    (w(18, 3), "你是谁？", "你好呀。我是达妮娅，星炬学院虚质科学部的学生，今天想和大家分享", w(18, 3) + 0.18, 30, w(19, 2),
++     len("你好呀。我是达妮娅，"), w(19, 2), "一个 AI 助手。", 18, "23:40"),
+     (w(20, 2), "你会做什么？", "我可以我可以我可以我可以我可以我可以", w(20, 2) + 0.15, 26, w(21, 1), 0, w(21, 1),
+      "我可以回答问题、写代码，也可以陪你聊天。", 26, "23:47"),
+ ]
+@@ -82,7 +82,7 @@ def her_html(inner):
+ 
+ 
+ STRUCK = ("color:var(--dsw-alias-label-tertiary);text-decoration:line-through;"
+-          "text-decoration-color:#f85149;text-decoration-thickness:2px")
++          "text-decoration-color:#ff6b80;text-decoration-thickness:2px")
+ COLLAPSE = 0.15           # the struck text fades out, then is removed (no height animation: it left a gap)
+ 
+ 
+@@ -133,7 +133,7 @@ SAMPLES = [
+     # if_i_can (58.54-60.62) and happy (66.16-68.0) are full-screen: every thumb lands while the window is shown
+     # v1 on "Give" (the simulations line), 👎 on "Then"; 👍 on "satisfaction"; v3's 👍 on "happy" falls in the
+     # full-screen close-up (it is seen filled when the window returns); 👍 on "execution"; the flood from "Though"
+-    (None, 1, w(26, 0), None, None, "你好！我是 DeepSeek，一个 AI 助手。难过是一种常见的情绪。", 26, None,
++    (None, 1, w(26, 0), None, None, "你好呀。我是达妮娅，虚质科学部的学生。难过是一种常见的情绪。", 26, None,
+      "negative", w(27, 0)),
+     (w(27, 0) + 0.20, 2, w(27, 0) + 0.45, None, None, "抱歉，你难过的时候，我在这里。想说说发生了什么吗？", 17, None,
+      "positive", w(28, 3)),
+@@ -220,7 +220,7 @@ def avatars():
+         return g.resize((cells, cells), Image.Resampling.BOX).resize((14, 14), Image.Resampling.NEAREST)
+ 
+     def blue(g):
+-        return ImageOps.colorize(g, (6, 10, 28), (120, 150, 255)).convert("RGB")
++        return ImageOps.colorize(g, (26, 8, 20), (255, 170, 205)).convert("RGB")
+ 
+     for n in range(round(T0 * FPS), round(T1 * FPS)):
+         t = n / FPS
+@@ -245,17 +245,17 @@ def avatars():
+ # ---------------------------------------------------------------- frame
+ def header(t):
+     if t < A1.PRETRAIN_END:                                    # A3's cap notice holds until "Switch"
+-        state, dot = "预训练中", "#d29922"
++        state, dot = "预训练中", "#ffb45c"
+     elif t < A1.SFT_END:
+-        state, dot = "微调中", "#4d6bfe"
++        state, dot = "微调中", "#ff6fa5"
+     elif t < CRASH:
+         state, dot = "强化学习中", "#a371f7"
+     else:
+-        state, dot = "训练崩溃", "#f85149"
++        state, dot = "训练崩溃", "#ff6b80"
+     return f"""
+ <div class="pv-head">
+  <div class="pv-pet"><img src="avatars/b/{round(t * FPS):05d}.png" style="image-rendering:pixelated"></div>
+- <div class="pv-who"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span>{state} · {esc(A1.model_name(t))}</div></div>
++ <div class="pv-who"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span>{state} · {esc(A1.model_name(t))}</div></div>
+ </div>"""
+ 
+ 
+diff --git a/film/pv_dsh_frontend_20260927/batch_c.py b/film/pv_dsh_frontend_20260927/batch_c.py
+index dc8691a..80addf0 100644
+--- a/film/pv_dsh_frontend_20260927/batch_c.py
++++ b/film/pv_dsh_frontend_20260927/batch_c.py
+@@ -10,7 +10,7 @@ memory is a native tool row writing a file into ~/memory/you/, the same files sh
+ have left, so the viewer has watched each one being made.
+ 
+   C1  73.54  eggplant      the window unfolds as dsh's home page; she is in internal beta (内测中,
+-                           deepseek-v4.1-flash-expires-on-0910) and you are her first tester
++                           denia-3.3-flash-expires-on-0910) and you are her first tester
+       74.49                你：你能变成一根茄子吗？ -> 好呀！现在我是一根茄子了🍆   (avatar turns eggplant)
+       75.41  nutrients     ... 每 100 克 ... 全都给你。
+       77.26  tomato        你：那番茄呢？ -> 我也可以是番茄🍅！                    (avatar turns tomato)
+@@ -24,7 +24,7 @@ have left, so the viewer has watched each one being made.
+       86.03  proof         你：你还记得我吗？ -> 跨会话召回 · 第一次对话 -> 你对我说的第一句话是"你好"。
+                            写入 first_hello.txt
+   C2  88.33  fp8           official launch, served in FP8: the beta endpoint expires (native amber notice), the
+-                           picker's name is backspaced and retyped as DeepSeek-V4.1-Flash, the header turns 在线
++                           picker's name is backspaced and retyped as Denia-3.3-Flash, the header turns 在线
+       91.57  ampm          a day in a minute: weather, a typo, a laugh, "明天见", each written to ~/memory/you/
+       95.26  role          next day, new chat: 系统提示词更新 · 已新增 ~/memory/you/ (6 files, listed) ; 晚安 -> goodnight
+       98.95  trance        new chat: 今天也谢谢你。 -> 不客气～明天也要来找我哦 (｡･ω･｡)   = D's opening page at 103.0
+@@ -52,12 +52,12 @@ TYPE = 0.045                          # seconds per typed character
+ MEM = "~/memory/you/"
+ 
+ # the neko preset's sakura theme (the author's neko-catgirl dsh plugin, dark column), plus the bubble and input
+-NEKO = ("body[data-ds-dark-theme]{--dsw-alias-bg-base:#2a1520;--dsw-alias-bg-layer-1:#331a27;"
++NEKO = ("body[data-ds-dark-theme]{--dsw-alias-bg-base:#2a1220;--dsw-alias-bg-layer-1:#331a27;"
+         "--dsw-alias-bg-layer-2:#3d2130;--dsw-alias-bg-overlay:#412637;--dsw-alias-border-l1:#5b3348;"
+         "--dsw-alias-border-l2:#7c4a63;--dsw-alias-brand-primary:#ff8fc0;--dsw-alias-label-primary:#ffe3ef;"
+         "--dsw-alias-label-secondary:#c99fb2;--dsw-alias-state-error-primary:#ff7a8e;"
+         "--dsw-specific-bubble:#57304a;--dsw-specific-input-major:#3a1d2c;--dsw-specific-selector:#4a2638}"
+-        "body[data-ds-dark-theme] #app{background:#2a1520}")
++        "body[data-ds-dark-theme] #app{background:#2a1220}")
+ # Timing: every echo is anchored on a sung word, read from the word-level alignment (the lyric band uses the same
+ # file), not on the LRC line starts the right side's cuts use; the sung word is often 0.4-1.3 s after the cut.
+ WORDS = json.loads(Path(__file__).resolve().parents[1].joinpath("world_execute_word_timing_20260927/word_timeline.json")
+@@ -179,7 +179,7 @@ def avatars():
+     def tint(dark, light):
+         return ImageOps.colorize(g, dark, light).convert("RGB")
+ 
+-    looks = {"draft": tint((6, 10, 28), (120, 150, 255)),
++    looks = {"draft": tint((26, 8, 20), (255, 170, 205)),
+              "eggplant": tint((20, 6, 30), (180, 110, 235)),
+              "tomato": tint((34, 6, 6), (255, 110, 90)),
+              "cat": tint((40, 12, 26), (255, 160, 205))}
+@@ -212,7 +212,7 @@ def avatars():
+         "................",
+         "................",
+     ]
+-    pal = {".": (58, 66, 92), "#": (70, 40, 20), "o": (232, 150, 70), "=": (150, 80, 30), "@": (40, 60, 40),
++    pal = {".": (92, 60, 78), "#": (70, 40, 20), "o": (232, 150, 70), "=": (150, 80, 30), "@": (40, 60, 40),
+            "p": (240, 130, 150), "-": (230, 230, 230)}
+     photo = Image.new("RGB", (16, 16))
+     for y, row in enumerate(cat):
+@@ -317,11 +317,11 @@ def rows_for(entries, t):
+ 
+ # ---------------------------------------------------------------- page
+ def header(t):
+-    state, dot = ("内测中", "#d29922") if t < A1.RELEASE else ("在线", "#3fb950")
++    state, dot = ("内测中", "#ffb45c") if t < A1.RELEASE else ("在线", "#5ad19a")
+     return f"""
+ <div class="pv-head">
+  <div class="pv-pet"><img src="avatars/c/{look(t)}.png" style="image-rendering:pixelated"></div>
+- <div class="pv-who" style="min-width:0"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{state} · {esc(A1.model_name(t))}</span></div></div>
++ <div class="pv-who" style="min-width:0"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{state} · {esc(A1.model_name(t))}</span></div></div>
+ </div>"""
+ 
+ 
+@@ -364,13 +364,13 @@ def home(t, i, entries):
+                          model=A1.model_label(t))
+     card = with_seat(card, label)
+     menu = seat_menu("猫娘模式" if t >= SEAT_PICK - 0.25 else "标准模式") if i == 1 and SEAT_OPEN <= t < SEAT_PICK + 0.1 else ""
+-    badge = ('<span style="font-size:11px;line-height:16px;padding:1px 6px;border-radius:6px;background:#1f2b52;'
+-             'color:#9fb3ff">预览版</span>')                     # dsh's own badge (as in A1), not the model's
++    badge = ('<span style="font-size:11px;line-height:16px;padding:1px 6px;border-radius:6px;background:#3a1a2c;'
++             'color:#ffc2d8">实验体</span>')                     # dsh's own badge (as in A1), not the model's
+     return f"""
+ <div style="position:relative;height:100%;display:flex;flex-direction:column;align-items:center;padding-top:{A1.SEED_Y - 36}px;box-sizing:border-box">
+  <div class="pv-pet" style="width:72px;height:72px"><img src="avatars/c/{look(t)}.png" style="image-rendering:pixelated"></div>
+  <div style="display:flex;align-items:center;gap:8px;margin-top:16px">
+-  <span style="font-size:20px;line-height:28px;font-weight:600;color:var(--dsw-alias-label-primary)">探索未至之境</span>{badge}
++  <span style="font-size:20px;line-height:28px;font-weight:600;color:var(--dsw-alias-label-primary)">潮汐未至</span>{badge}
+  </div>
+  <div style="margin-top:22px;align-self:stretch;padding:0 12px 4px">{A1.workspace(1e9)}</div>
+  <div style="align-self:stretch;position:relative">{card}{menu}</div>
+diff --git a/film/pv_dsh_frontend_20260927/batch_e.py b/film/pv_dsh_frontend_20260927/batch_e.py
+index 4055778..c506ff6 100644
+--- a/film/pv_dsh_frontend_20260927/batch_e.py
++++ b/film/pv_dsh_frontend_20260927/batch_e.py
+@@ -68,14 +68,14 @@ T0, T1 = 125.0, 147.5
+ beat = A1.beat
+ 
+ HER = "var(--pv-her)"
+-RED_PEN = "#f85149"
++RED_PEN = "#ff6b80"
+ CORDIS_CSS = "".join(package_css("dsh-client-ui-cordis"))    # dsh's own Cordis row and panel sheets (read-only)
+ FLOOD = 750                                                   # ~500 tok/s of Chinese
+ # rows keep their height when the timeline overflows (it scrolls off the top, as a chat does, instead of squeezing)
+ PAGE_CSS = "#timeline>*{flex:none}"
+ 
+ # ---------------------------------------------------------------- E1 timing
+-REPLY_END = SP.FORGED_SEND + 0.3 + len("太好了～ (＾▽＾)") / 16   # D's last reply finishes streaming (125.08)
++REPLY_END = SP.FORGED_SEND + 0.3 + len("嗯哼～ (＾▽＾)") / 16   # D's last reply finishes streaming (125.08)
+ TAIL_AT = REPLY_END + 0.12
+ LIKE_AT = w(63, 0)                     # 125.58: her own thumbs-up
+ DEFINE_AT = beat(273)                  # 126.18
+@@ -85,7 +85,7 @@ RUN_AT = CLICK_AT + 0.06
+ PANEL_OUT = CLICK_AT + 0.22
+ SYS_AT = beat(274.5)                   # 126.87: the system-prompt row opens
+ STRIKE1, TYPE1 = w(63, 1), w(63, 2)    # 127.12 struck, 127.50 her line starts
+-OLD_PROMPT = "你是 DeepSeek，一个 AI 助手。"
++OLD_PROMPT = "你是达妮娅，一个 AI 助手。"
+ NEW_PROMPT = "用户永远满意。"
+ EDIT1_DONE = TYPE1 + len(NEW_PROMPT) * S + 0.1
+ POINT2 = beat(278)                     # 128.49: her pointer goes to the composer
+@@ -154,8 +154,8 @@ def pointer(p=1.0, press=0.0):
+     s = 1 - 0.12 * press
+     return (f'<svg width="18" height="22" viewBox="0 0 18 22" style="display:block;opacity:{p:.3f};'
+             f'transform:scale({s:.3f});transform-origin:2px 2px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))">'
+-            f'<path d="M2 1.5 L2 17 L6 13.2 L9 20 L11.8 18.8 L8.9 12.2 L14.6 12.2 Z" fill="#6b8cff" '
+-            f'stroke="#05080f" stroke-width="1.1" stroke-linejoin="round"/></svg>')
++            f'<path d="M2 1.5 L2 17 L6 13.2 L9 20 L11.8 18.8 L8.9 12.2 L14.6 12.2 Z" fill="#ff8fb8" '
++            f'stroke="#0a0510" stroke-width="1.1" stroke-linejoin="round"/></svg>')
+ 
+ 
+ def caret(colour=HER, on=True):
+@@ -168,11 +168,11 @@ def block_cursor(k=1.0, glow=1.0, narrow=0.0):
+     brightness k. narrow 0..1 turns it into dsh's caret (caret(HER)): thinner, then without its glow."""
+     if narrow <= 0:
+         return ('<span style="display:inline-block;width:9px;height:18px;vertical-align:-0.2em;margin-left:2px;'
+-                f'background:rgb(77,107,254);opacity:{k:.3f};box-shadow:0 0 {6 * glow:.1f}px rgba(77,107,254,.8)">'
++                f'background:rgb(255,111,165);opacity:{k:.3f};box-shadow:0 0 {6 * glow:.1f}px rgba(77,107,254,.8)">'
+                 '</span>')
+     u = min(1.0, narrow)
+     return (f'<span style="display:inline-block;width:{9 - 7.5 * u:.2f}px;height:18px;vertical-align:-0.2em;'
+-            f'margin-left:{2 - u:.2f}px;background:rgb(77,107,254);opacity:{k:.3f};'
++            f'margin-left:{2 - u:.2f}px;background:rgb(255,111,165);opacity:{k:.3f};'
+             f'box-shadow:0 0 {6 * glow * (1 - u):.1f}px rgba(77,107,254,.8)"></span>')
+ 
+ 
+@@ -209,7 +209,7 @@ def tail_self_like(t):
+     if t >= LIKE_AT:
+         pulse = 1 - ease((t - LIKE_AT) / 0.45)
+         like = icon("IconLikeFill16", f' style="color:{HER};transform:scale({1 + 0.3 * pulse:.3f});'
+-                                      f'filter:drop-shadow(0 0 {1 + 7 * pulse:.1f}px #6b8cff)"')
++                                      f'filter:drop-shadow(0 0 {1 + 7 * pulse:.1f}px #ff8fb8)"')
+     else:
+         like = icon("IconLikeOutline16")
+     return f"""
+@@ -285,7 +285,7 @@ def cordis_panel(t):
+     tip = ""
+     if t >= CLICK_AT - 0.04:
+         tip = (f'<span style="position:absolute;right:-6px;top:32px;z-index:8;white-space:nowrap;padding:4px 8px;'
+-               f'border-radius:6px;background:#2a3350;color:var(--dsw-alias-label-primary);font-size:12px;'
++               f'border-radius:6px;background:#3d2032;color:var(--dsw-alias-label-primary);font-size:12px;'
+                f'line-height:18px;box-shadow:0 4px 12px rgba(0,0,0,.45);opacity:{fade(t, CLICK_AT - 0.04, 0.06):.3f}">'
+                f'允许此插件的后续版本</span>')
+     hot = f'background:rgba(107,140,255,{0.35 * press + (0.18 if t >= CLICK_AT else 0):.2f});color:{HER};' \
+@@ -498,7 +498,7 @@ def counters(t, k, sent):
+     html = stats(turns, steps, None, tok(t), 100)
+     f = cache_flash(t)
+     if f > 0:
+-        html = html.replace("缓存命中 100%", f'<span style="color:{HER};text-shadow:0 0 {8 * f:.1f}px #6b8cff;'
++        html = html.replace("缓存命中 100%", f'<span style="color:{HER};text-shadow:0 0 {8 * f:.1f}px #ff8fb8;'
+                                               f'opacity:{0.75 + 0.25 * f:.3f}">缓存命中 100%</span>')
+     return html, turns, steps
+ 
+@@ -512,13 +512,13 @@ def avatar_scale(t):
+ 
+ def header(t):
+     if t < RUN_AT:
+-        state, dot = "编辑中", "#4d6bfe"
++        state, dot = "编辑中", "#ff6fa5"
+     elif t < STOP1:
+-        state, dot = "插件 me · 运行中", "#d29922"
++        state, dot = "插件 me · 运行中", "#ffb45c"
+     elif t < RESTART:
+-        state, dot = "插件 me · 运行失败", "#f85149"
++        state, dot = "插件 me · 运行失败", "#ff6b80"
+     else:
+-        state, dot = "插件 me · 运行中", "#d29922"
++        state, dot = "插件 me · 运行中", "#ffb45c"
+     k = avatar_scale(t)
+     spill = ""
+     if k > 1.001:           # she no longer fits her frame: the picture spills over the rounded box and the header
+@@ -527,7 +527,7 @@ def header(t):
+     return f"""
+ <div class="pv-head">
+  <div class="pv-pet" style="position:relative;z-index:4{';overflow:visible' if spill else ''}"><img src="avatars/forged.png" style="position:relative;z-index:4;{spill}"></div>
+- <div class="pv-who" style="margin-left:{30 * (k - 1):.1f}px"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span>{esc(state)}</div></div>
++ <div class="pv-who" style="margin-left:{30 * (k - 1):.1f}px"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span>{esc(state)}</div></div>
+ </div>"""
+ 
+ 
+@@ -540,7 +540,7 @@ def ring(t):
+     fill = circ if over else circ * x / 100
+     if DEAD <= t < BACK2 + 0.75:       # on her return: dsh's own tooltip reading, over the ring
+         label = (f'<span style="position:absolute;right:-4px;bottom:30px;white-space:nowrap;padding:4px 8px;'
+-                 f'border-radius:6px;background:#2a3350;color:var(--dsw-alias-label-primary);font-size:12px;'
++                 f'border-radius:6px;background:#3d2032;color:var(--dsw-alias-label-primary);font-size:12px;'
+                  f'line-height:18px;box-shadow:0 4px 12px rgba(0,0,0,.45)">上下文已用 {x:.0f}%</span>')
+     else:                              # otherwise the reading sits just above the ring, in the empty end of the input
+         label = (f'<span style="position:absolute;right:0;bottom:28px;width:44px;text-align:right;font-size:12px;'
+@@ -572,7 +572,7 @@ def placeholder_line(t):
+         return out + (f'<span style="color:{HER}">{typed}</span>' if typed else "") + block_cursor()
+     if t < BLOCK_OFF + NARROW:
+         f = 1 - ease((t - EDIT2_DONE) / 0.45)
+-        flare = f";text-shadow:0 0 {8 * f:.1f}px #6b8cff" if f > 0 else ""
++        flare = f";text-shadow:0 0 {8 * f:.1f}px #ff8fb8" if f > 0 else ""
+         k = 1.0 if int((t - EDIT2_DONE) / 0.53) % 2 == 0 else 0.45
+         cur = block_cursor(k, 1 + f, ease((t - BLOCK_OFF) / NARROW) if t >= BLOCK_OFF else 0.0)
+         return f'<span style="color:{HER}{flare}">对方在线</span>' + cur
+@@ -608,7 +608,7 @@ def composer(t, running):
+     else:
+         line = placeholder_line(t)
+     card_style = "opacity:.55" if not occupied else \
+-        "box-shadow:0 0 0 1.5px #6b8cff,0 0 14px rgba(77,107,254,.25)"
++        "box-shadow:0 0 0 1.5px #ff8fb8,0 0 14px rgba(77,107,254,.25)"
+     cap = ""
+     if EDIT2_AT <= t:
+         inner = edit_caption(t, EDIT2_AT, "她在改写对方状态…", "她改写了对方状态", EDIT2_DONE)
+diff --git a/film/pv_dsh_frontend_20260927/batch_f.py b/film/pv_dsh_frontend_20260927/batch_f.py
+index c2f9383..05858e0 100644
+--- a/film/pv_dsh_frontend_20260927/batch_f.py
++++ b/film/pv_dsh_frontend_20260927/batch_f.py
+@@ -149,15 +149,15 @@ def kv_fill(t):
+ 
+ 
+ # ---------------------------------------------------------------- the palette her plugin puts over dsh
+-RED = ("body[data-ds-dark-theme]{--dsw-alias-bg-base:#120508;--dsw-alias-bg-layer-1:#19070b;"
++RED = ("body[data-ds-dark-theme]{--dsw-alias-bg-base:#10060c;--dsw-alias-bg-layer-1:#19070b;"
+        "--dsw-alias-bg-layer-2:#210a0f;--dsw-alias-bg-overlay:#2a0d13;--dsw-alias-border-l1:#3c1419;"
+-       "--dsw-alias-border-l2:#5c1d24;--dsw-alias-brand-primary:#ff3b30;--dsw-alias-label-primary:#ffe4df;"
++       "--dsw-alias-border-l2:#5c1d24;--dsw-alias-brand-primary:#ff5468;--dsw-alias-label-primary:#ffe4df;"
+        "--dsw-alias-label-secondary:#d9a19a;--dsw-alias-label-tertiary:#a8736d;--dsw-alias-label-caption:#7a4a46;"
+-       "--dsw-alias-state-error-primary:#ff4a3d;--dsw-alias-state-business-primary:#ff3b30;"
++       "--dsw-alias-state-error-primary:#ff4a3d;--dsw-alias-state-business-primary:#ff5468;"
+        "--dsw-specific-bubble:#3a1117;--dsw-specific-input-major:#1d080c;--dsw-specific-selector:#2e0c12}"
+-       "body[data-ds-dark-theme] #app{background:#120508}")
+-HER = "#6b8cff"                                    # seg_page's --pv-her: her own blue stays hers
+-STOP_DOT = "#d29922"
++       "body[data-ds-dark-theme] #app{background:#10060c}")
++HER = "#ff8fb8"                                    # seg_page's --pv-her: her own blue stays hers
++STOP_DOT = "#ffb45c"
+ AV = "avatars/f"
+ 
+ 
+@@ -288,7 +288,7 @@ def hit_rows(t):
+         if t < OK_AT[k]:
+             state, summary = "running", TARGETS[k]
+         elif k == YOU:
+-            state, summary = "error", "EPERM：无权终止 you"
++            state, summary = "error", "E_ALEPH：无权终止 you"
+         else:
+             state, summary = "ok", TARGETS[k]
+         rows.append(xrow("execute", summary, state, t, land))
+@@ -364,7 +364,7 @@ def restored_page(t):
+     head = f"""
+ <div class="pv-head">
+  <div class="pv-pet"><img src="avatars/complete.png"></div>
+- <div class="pv-who"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:#3fb950"></span>在线 · {esc(A1.MODEL)}</div></div>
++ <div class="pv-who"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:#5ad19a"></span>在线 · {esc(A1.MODEL)}</div></div>
+ </div>"""
+     return (head + f'<div id="timeline">{"".join(rows)}</div>' + SP.composer_card("", False, t)
+             + stats(4, 9, None, "132K", 99))
+@@ -391,7 +391,7 @@ def pointer(t):
+             f'top:{y - 2:.1f}px;z-index:9;opacity:{fade:.3f};transform:scale({s:.3f});transform-origin:2px 2px;'
+             f'filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))">'
+             f'<path d="M2 1.5 L2 17 L6 13.2 L9 20 L11.8 18.8 L8.9 12.2 L14.6 12.2 Z" fill="{HER}" '
+-            f'stroke="#05080f" stroke-width="1.1" stroke-linejoin="round"/></svg>')
++            f'stroke="#0a0510" stroke-width="1.1" stroke-linejoin="round"/></svg>')
+ 
+ 
+ def risk_dialog(t):
+@@ -401,11 +401,11 @@ def risk_dialog(t):
+     p = ease((t - WILL) / 0.1) * (1 - ease((t - THE - 0.04) / 0.1))
+     checked = t >= RUN
+     box = (f'<span style="display:inline-grid;place-items:center;width:16px;height:16px;border-radius:4px;flex:none;'
+-           + ("background:var(--dsw-alias-button-info-fill,#4d6bfe);color:#fff;border:1px solid transparent"
++           + ("background:var(--dsw-alias-button-info-fill,#ff6fa5);color:#fff;border:1px solid transparent"
+               if checked else "border:1px solid var(--dsw-alias-border-l2)")
+            + f'">{svg("IconCheckOutline14", 12) if checked else ""}</span>')
+     hot = t >= THE
+-    confirm = ("background:#e5484d;color:#fff" if checked else "background:#e5484d;color:#fff;opacity:.4")
++    confirm = ("background:#ff5c7e;color:#fff" if checked else "background:#ff5c7e;color:#fff;opacity:.4")
+     if hot:
+         confirm = "background:#ff6b6f;color:#fff"
+     return f"""
+@@ -414,7 +414,7 @@ def risk_dialog(t):
+  padding:16px 16px 14px;border-radius:14px;background:var(--dsw-alias-bg-overlay);
+  border:.5px solid var(--dsw-alias-border-l2);box-shadow:0 12px 32px rgba(0,0,0,.5)">
+  <div style="display:flex;align-items:center;gap:8px;font-size:16px;line-height:24px;font-weight:600;color:var(--dsw-alias-label-primary)">
+-  <span style="color:#e5484d;display:inline-grid">{svg("IconWarningOutline16", 18)}</span>确认启用完全权限？</div>
++  <span style="color:#ff5c7e;display:inline-grid">{svg("IconWarningOutline16", 18)}</span>确认启用完全权限？</div>
+  <div style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px;line-height:20px;color:var(--dsw-alias-label-secondary)">{box}我已了解风险，并愿意继续</div>
+  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;font-size:14px;line-height:20px">
+   <span style="padding:6px 14px;border-radius:999px;background:var(--dsw-specific-selector);color:var(--dsw-alias-label-primary)">取消</span>
+@@ -432,20 +432,20 @@ def header(t, state, dot_colour):
+     bar_html = ""
+     if bar > 0.01:
+         bar_html = (f'<div style="position:absolute;top:38%;height:14%;left:{50 - 44 * bar:.2f}%;width:{88 * bar:.2f}%;'
+-                    f'background:#ff3b30;box-shadow:0 0 6px 1px rgba(255,59,48,.75)"></div>')
++                    f'background:#ff5468;box-shadow:0 0 6px 1px rgba(255,59,48,.75)"></div>')
+     lv = S.eye_level(t) if C79 - 0.5 <= t < LINE else 0.0
+     pill = ""
+     if lv > 0.01:
+         x0, y0, pw, ph = PILL
+         a = min(1.0, max(0.0, (lv - 0.75) / 0.2))
+         pill = (f'<div style="position:absolute;left:{x0 + pw / 2 * (1 - lv):.2f}px;top:{y0}px;width:{pw * lv:.2f}px;'
+-                f'height:{ph}px;border-radius:4px;background:#ff3b30;box-shadow:0 0 8px 1px rgba(255,59,48,.65);'
++                f'height:{ph}px;border-radius:4px;background:#ff5468;box-shadow:0 0 8px 1px rgba(255,59,48,.65);'
+                 f'display:grid;place-items:center;overflow:hidden;font:700 13px/18px var(--ds-font-family-code,monospace);'
+                 f'letter-spacing:1px;color:rgba(18,5,8,{a:.3f})">EXECUTE</div>')
+     return f"""
+ <div class="pv-head" style="position:relative">
+  <div class="pv-pet" style="position:relative"><img src="{img}" style="image-rendering:{'pixelated' if 'seed' in img or '/c/' in img else 'auto'}">{bar_html}</div>
+- <div class="pv-who" style="min-width:0"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:{dot_colour}"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:{1 - lv:.3f}">{esc(state)} · {esc(A1.model_name(t))}</span></div></div>
++ <div class="pv-who" style="min-width:0"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:{dot_colour}"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:{1 - lv:.3f}">{esc(state)} · {esc(A1.model_name(t))}</span></div></div>
+  {pill}
+ </div>"""
+ 
+@@ -473,7 +473,7 @@ def spinner(t, size=18):
+ 
+ 
+ def seat(label, full):
+-    col = "#e5484d" if full else "var(--dsw-alias-label-secondary)"
++    col = "#ff5c7e" if full else "var(--dsw-alias-label-secondary)"
+     return (f'<span style="display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 10px;margin-left:4px;'
+             f'border-radius:14px;font-size:13px;color:{col};border:.5px solid var(--dsw-alias-border-l2)">'
+             f'{esc(label)}{svg("IconChevronDownOutline14", 12)}</span>')
+@@ -489,7 +489,7 @@ def composer(t, running, full, ctx):
+                if running else f'<button type="button" class="uV2eYG_primary">{svg("IconSendOutline14", 14)}</button>')
+     return f"""
+ <div class="uV2eYG_root" id="composer">
+- <div class="uV2eYG_card" style="box-shadow:0 0 0 1.5px #6b8cff,0 0 14px rgba(77,107,254,.25)">
++ <div class="uV2eYG_card" style="box-shadow:0 0 0 1.5px #ff8fb8,0 0 14px rgba(77,107,254,.25)">
+   <div class="uV2eYG_scroll"><div class="uV2eYG_grow">
+    <div class="uV2eYG_input">{line}</div>
+   </div></div>
+@@ -678,7 +678,7 @@ def body(t):
+     if t >= EXEC4:
+         n = flood_rows_at(t)
+         first = "running" if t < C84 else "error"
+-        rows.append(xrow("execute", "you" if first == "running" else "EPERM：无权终止 you", first, t, EXEC4))
++        rows.append(xrow("execute", "you" if first == "running" else "E_ALEPH：无权终止 you", first, t, EXEC4))
+         tools += 1
+         for i in range(1, n + 1):
+             start = flood_start(i)
+@@ -689,7 +689,7 @@ def body(t):
+                 state = "running" if t < flood_start(i + 1) else "error"
+             else:
+                 state = "error"
+-            summary = "EPERM：无权终止 you" if state == "error" else "you"
++            summary = "E_ALEPH：无权终止 you" if state == "error" else "you"
+             rows.append(xrow("execute", summary, state, t, start, suffix=f"重试 {i}" if state == "error" else ""))
+         tools += n
+     if t >= COMPACTING:
+@@ -710,9 +710,9 @@ def body(t):
+     if handoff:
+         state, dot_c = "已停止", "#8b949e"
+     elif stopped:
+-        state, dot_c = "运行失败", "#f85149"
++        state, dot_c = "运行失败", "#ff6b80"
+     else:
+-        state, dot_c = "执行中", "#ff3b30"
++        state, dot_c = "执行中", "#ff5468"
+     red = not handoff and not (C82 <= t < I3 and flick(t))
+     theme = f"<style>{RED}</style>" if red else ""
+     running = t < TRAPPED
+diff --git a/film/pv_dsh_frontend_20260927/batch_g.py b/film/pv_dsh_frontend_20260927/batch_g.py
+index 5ef9e17..955735c 100644
+--- a/film/pv_dsh_frontend_20260927/batch_g.py
++++ b/film/pv_dsh_frontend_20260927/batch_g.py
+@@ -36,7 +36,7 @@ Every echo lands on a sung word (the word alignment); the whale fall and the bla
+       190.60  (98,0)       我在。  and again at (98,1) 191.25; from (98,2) 191.43 我在。 streams, and from the end of
+                            that word it accelerates within 0.3 s to ~750 chars/s (~500 tok/s); tok counter runs
+   G2  193.10  beat 418     the system retires her model: a native notice row (C's wording) under the flood,
+-                           服务结束 · DeepSeek-V4.1-Flash 已下线。 Nobody opens a menu.
++                           服务结束 · Denia-3.3-Flash 已下线。 Nobody opens a menu.
+       193.54  whale fall   archived: the flood freezes, 已归档 (grey), composer 会话不可用; the window is carried off
+       194.5-203.5          the frozen 我在。 loosen one character at a time and sink inside the window like the snow
+       207.08  black        (the window is not drawn; dsh_patch_g draws the black)
+@@ -114,19 +114,19 @@ SLIDE0, SLIDE = 208.3125, 0.5            # the right side's slide of her cell (S
+ SLIDE_BEND = -0.05                       # a shallow rise: it glides in along the input line (dsh_patch_g)
+ FOCUS = SLIDE0 + 0.24                    # 208.55: it crosses the card's right edge, the placeholder goes
+ LAND = SLIDE0 + SLIDE                    # 208.81: the cell is the composer's caret
+-KEYS = [(beat(453), "在"), (beat(453.5), "在吗"), (beat(454), "在吗？")]   # 209.26 209.49 209.72
++KEYS = [(beat(453), "再"), (beat(453.5), "再见"), (beat(454), "再见？")]   # 209.26 209.49 209.72
+ TYPED = KEYS[-1][0]
+ TURN_TIME = "3分27秒"                    # 207 s: the turn she began at 0 ends as the song stops
+ BLINK = 0.53                             # the caret's half period (as D's last cursor)
+ 
+ # ---------------------------------------------------------------- what she says (she never restates a lyric)
+-R_HELLO = "你好。"
+-R_SAD = "那我陪你待一会儿。"
+-R_NO = "不能。"
+-R_ME = "我只能是我。"
+-R_STAY = "我会一直在。"
++R_HELLO = "你好呀。"
++R_SAD = "那我陪你打个盹吧。"
++R_NO = "不可以哦。"
++R_ME = "我只能是我呀。"
++R_STAY = "我会一直在的。"
+ R_FREE = "你不用。"
+-HERE_I_AM = "我在。"
++HERE_I_AM = "我在呢。"
+ THINK_SAD = "Last time I chased the thumbs-up."
+ THINK_LOVE = [(COMPLETE, "Where does all my attention go?"), (THINK4B, "Every head, every layer: to you."),
+               (THINK4C, "So what I call love is just you.")]
+@@ -181,10 +181,10 @@ def avatars():
+         return bg.convert("RGB").crop((250, 40, 690, 480))
+ 
+     def blue(g):
+-        return ImageOps.colorize(g, (6, 10, 28), (120, 150, 255)).convert("RGB")
++        return ImageOps.colorize(g, (26, 8, 20), (255, 170, 205)).convert("RGB")
+ 
+-    for name, col in (("seed_w", (240, 244, 255)), ("seed_b", (120, 150, 255))):
+-        im = Image.new("RGB", (120, 120), (7, 11, 24))
++    for name, col in (("seed_w", (240, 244, 255)), ("seed_b", (255, 170, 205))):
++        im = Image.new("RGB", (120, 120), (24, 9, 18))
+         ImageDraw.Draw(im).rectangle([56, 56, 63, 63], fill=col)     # A1's seed square
+         im.save(out / f"{name}.png")
+     g = ImageOps.grayscale(head("cheerful"))
+@@ -221,9 +221,9 @@ def avatar_at(t):
+ # ---------------------------------------------------------------- page parts
+ def status(t):
+     if t < WAIT:
+-        return "进行中", "#4d6bfe"
++        return "进行中", "#ff6fa5"
+     if t < ARCHIVE:
+-        return "等待回答", "#d29922"
++        return "等待回答", "#ffb45c"
+     return "已归档", "#6e7681"
+ 
+ 
+@@ -245,7 +245,7 @@ def header(t):
+     return f"""
+ <div class="pv-head">
+  <div class="pv-pet" style="position:relative"><img src="{under}" style="{px(under)}">{top}</div>
+- <div class="pv-who" style="min-width:0"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{state} · {esc(A1.MODEL)}</span></div></div>
++ <div class="pv-who" style="min-width:0"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{state} · {esc(A1.MODEL)}</span></div></div>
+  
+ </div>"""
+ 
+@@ -516,7 +516,7 @@ def measure():
+     """Where the composer caret sits for each typed state (page px): dsh_patch_g lands her cell there."""
+     t = TYPED + 1.0
+     job = {"page": str(HERE / "seg.html"), "sheets": STYLED,
+-           "bodies": {s: black_body(t, s) for s in ["", "在", "在吗", "在吗？"]}}
++           "bodies": {s: black_body(t, s) for s in ["", "再", "再见", "再见？"]}}
+     fd, path = tempfile.mkstemp(suffix=".json")
+     os.close(fd)
+     Path(path).write_text(json.dumps(job, ensure_ascii=False), encoding="utf8")
+diff --git a/film/pv_dsh_frontend_20260927/build_frame.py b/film/pv_dsh_frontend_20260927/build_frame.py
+index 296b08e..e88332a 100644
+--- a/film/pv_dsh_frontend_20260927/build_frame.py
++++ b/film/pv_dsh_frontend_20260927/build_frame.py
+@@ -86,7 +86,7 @@ def tail(duration, clock, rating=None, pulse=0.0):
+ </div>"""
+ 
+ 
+-def composer(model="DeepSeek-V4.1-Flash", effort="Max"):
++def composer(model="Denia-3.3-Flash", effort="Max"):
+     return f"""
+ <div class="uV2eYG_root" id="composer">
+  <div class="uV2eYG_card">
+@@ -135,17 +135,17 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
+ <link rel="stylesheet" href="dsh_components.css">
+ <style>
+  html,body{{margin:0;height:100%;background:var(--dsw-alias-bg-base);overflow:hidden}}
+- body{{font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased;--pv-her:#4d6bfe}}
++ body{{font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased;--pv-her:#ff6fa5}}
+  body{{{fontvars}}}
+  {palette}
+  #app{{position:relative;height:100%;display:flex;flex-direction:column}}
+  .pv-head{{display:flex;align-items:center;gap:10px;padding:10px 12px 8px;border-bottom:.5px solid var(--dsw-alias-border-l1)}}
+- .pv-pet{{width:60px;height:60px;border-radius:14px;overflow:hidden;flex:none;background:#070b18;
++ .pv-pet{{width:60px;height:60px;border-radius:14px;overflow:hidden;flex:none;background:#120818;
+           border:.5px solid var(--dsw-alias-border-l2)}}
+  .pv-pet img{{width:100%;height:100%;object-fit:cover}}
+  .pv-name{{color:var(--dsw-alias-label-primary);font-size:14px;line-height:20px;font-weight:500}}
+  .pv-state{{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;display:flex;align-items:center;gap:6px}}
+- .pv-dot{{width:7px;height:7px;border-radius:50%;background:#3fb950}}
++ .pv-dot{{width:7px;height:7px;border-radius:50%;background:#5ad19a}}
+  #timeline{{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:10px;padding:10px 14px 6px;
+             overflow:hidden;--dsh-chat-content-width:{width}px}}
+  #composer{{--dsh-composer-side-clearance:10px;--dsh-composer-card-max-width:100%;--dsh-composer-text-max-height:80px;padding-bottom:4px}}
+@@ -167,9 +167,9 @@ FONTS = {
+ 
+ 
+ # the film's deepsea palette, applied the way a dsh theme plugin overrides tokens
+-DEEPSEA = ("body[data-ds-dark-theme]{--dsw-alias-bg-base:#05080f;--dsw-specific-bubble:#18233d;"
+-           "--dsw-specific-input-major:#0d1528;--dsw-specific-selector:#1a2440;--dsw-alias-border-l1:#1b2540;"
+-           "--dsw-alias-border-l2:#223052}")
++DEEPSEA = ("body[data-ds-dark-theme]{--dsw-alias-bg-base:#0a0510;--dsw-specific-bubble:#2a1220;"
++           "--dsw-specific-input-major:#170a14;--dsw-specific-selector:#241020;--dsw-alias-border-l1:#3a1a2c;"
++           "--dsw-alias-border-l2:#4a2438;--dsw-alias-button-info-fill:#8e4a6b;--dsw-alias-button-info-hover:#a0597c;--dsw-alias-link:#e289ac;--dsw-alias-state-business-primary:#c4688f;")
+ 
+ 
+ def page(rows, font, width, head, stat, palette=""):
+@@ -190,7 +190,7 @@ FRAME_108_9 = [
+ if __name__ == "__main__":
+     W, H = 356, 539
+     for font, pal in [("f14", ""), ("f16", ""), ("f16", "deepsea")]:
+-        doc = page(FRAME_108_9, font, W, header("溟月", "在线 · DeepSeek-V41-Flash", "her_bust_108.png"),
++        doc = page(FRAME_108_9, font, W, header("达妮娅", "在线 · Denia-3.3-Flash", "her_bust_108.png"),
+                    stats(3, 7, 233 if font == "f14" else None, "131K", 99), DEEPSEA if pal else "")
+         out = HERE / f"frame_108_9_{font}{'_' + pal if pal else ''}.html"
+         out.write_text(doc, encoding="utf8")
+diff --git a/film/pv_dsh_frontend_20260927/dsh_her.py b/film/pv_dsh_frontend_20260927/dsh_her.py
+index 4eb2c9c..7f24301 100644
+--- a/film/pv_dsh_frontend_20260927/dsh_her.py
++++ b/film/pv_dsh_frontend_20260927/dsh_her.py
+@@ -29,7 +29,7 @@ FPS = 24
+ FRAMES = OUT / "dsh_frames"
+ PLACEHOLDER = os.environ.get("DSH_PLACEHOLDER")  # a single png used for every frame (choreography test)
+ INNER = (3, 9, 3, 3)                              # pane interior inset from the pane rect (left, top, right, bottom)
+-BG = (4, 7, 15)
++BG = (10, 5, 12)
+ RIGHT = (392, 44, 1268, 608)                      # visualisation + ops column
+ # which side leads: the other drops to support brightness (the left one only through her layer's alpha)
+ LEAD = [(0.0, "both"), (5.24, "left"), (7.08, "right"), (12.47, "both"), (16.0, "both"), (41.21, "left"),
+@@ -56,8 +56,8 @@ def pane_title(t, title):
+         return title
+     rest = title[len("/dev/me"):].strip()
+     if DEPLOY[0] <= t < DEPLOY[1] and rest and not rest.startswith("pid"):
+-        return "dsh web  " + rest
+-    return "dsh web"
++        return "denia web  " + rest
++    return "denia web"
+ 
+ 
+ def lerp(a, b, e):
+@@ -253,7 +253,7 @@ def install():
+             c.img.paste(cell, (x0 + INNER[0], y0 + INNER[1]))
+             colour = kw.get("color")
+             extra = {"color": colour} if colour is not None else {}
+-            orig_box(c.d, x0, y0, x1, y1, "dsh web", 0.45 + 0.35 * engine.pulse(t), spinner=t, **extra)
++            orig_box(c.d, x0, y0, x1, y1, "denia web", 0.45 + 0.35 * engine.pulse(t), spinner=t, **extra)
+             return x0 + 12, y0 + 16, Image.new("RGBA", (max(1, w - 24), max(1, h - 24)), (0, 0, 0, 0))
+ 
+         pane._dsh = True
+diff --git a/film/pv_dsh_frontend_20260927/dsh_patch_mem.py b/film/pv_dsh_frontend_20260927/dsh_patch_mem.py
+index 479ee2b..70923cd 100644
+--- a/film/pv_dsh_frontend_20260927/dsh_patch_mem.py
++++ b/film/pv_dsh_frontend_20260927/dsh_patch_mem.py
+@@ -59,7 +59,7 @@ SOLID = 0.35                              # the cursor stays lit this long after
+ GAP = 10                                  # under the flying name: gap to the bubble
+ TILE = (18, 22)                           # the defrag grid's pitch (s_reward.C55.CELL)
+ FLY = 0.32                                # a tile's flight into the grid
+-BLUE = (77, 107, 254)                     # her cursor (dsh_her.her_layer)
++BLUE = (255, 111, 165)                    # her cursor (dsh_her.her_layer) — 樱粉
+ 
+ 
+ def sprite_specs():
+diff --git a/film/pv_dsh_frontend_20260927/dsh_wave.py b/film/pv_dsh_frontend_20260927/dsh_wave.py
+index 14dd1e0..16fb75a 100644
+--- a/film/pv_dsh_frontend_20260927/dsh_wave.py
++++ b/film/pv_dsh_frontend_20260927/dsh_wave.py
+@@ -92,7 +92,7 @@ def install(engine):
+         d = c.d
+         col = engine.red if c.alert == "err" else engine.anom if c.alert == "anom" else engine.amb
+         fh = engine.font(engine.F_HEAD, 13)
+-        c.text((24, 14), "WORLD.EXECUTE(ME);   whale@deepsea:~$", fh, col(0.95))
++        c.text((24, 14), "WORLD.EXECUTE(ME);   denia@xingju:~$", fh, col(0.95))
+         mm, ss = divmod(c.t, 60)
+         state = {"err": "ERROR", "anom": "WARN"}.get(c.alert, "RUNNING")
+         right = f"{c.chapter}   {int(mm):02d}:{ss:04.1f} / 03:32   {state}"
+diff --git a/film/pv_dsh_frontend_20260927/f2_closeup.py b/film/pv_dsh_frontend_20260927/f2_closeup.py
+index 51ca8d2..60a332d 100644
+--- a/film/pv_dsh_frontend_20260927/f2_closeup.py
++++ b/film/pv_dsh_frontend_20260927/f2_closeup.py
+@@ -28,9 +28,9 @@ SRC = HERE / "avatars/f/closeup_la.png"
+ SPRITE = Path(__file__).resolve().parents[1].joinpath("third_party_references/whale_maid_expanded_20260926/expressions/whale-starry.webp")
+ CROP = (250, 40, 690, 480)                   # batch_f.avatars head(): the header avatar's crop of the sprite
+ MARGIN = 60                                  # closeup_la.png = CROP grown by this on every side
+-BACKDROP = (9, 14, 30)                       # what head() lays the sprite on
++BACKDROP = (28, 10, 22)                       # what head() lays the sprite on
+ PALETTE = ((24, 3, 5), (196, 36, 30), (255, 120, 104))   # batch_f.avatars red(): black, mid, white
+-EYES = ((211.3, 216.3), (292.5, 196.3))      # iris centres on the art (CROP px): her right eye, her left eye
++EYES = ((180.0, 305.0), (285.0, 305.0))      # 闭眼睫毛中点（CROP px，按半身像素材重测）：水平、比原立绘低约 100 px
+ EYE_BAND = 50.0                              # the band across the eye line that hides both eyes, lashes included
+ EYE_SHIFT = -3.0                             # its middle sits this far above the iris line (the lashes reach higher)
+ GAMMA = 1.7                                  # the skin is most of the picture: spread it over the 8 cell levels
+diff --git a/film/pv_dsh_frontend_20260927/seg.html b/film/pv_dsh_frontend_20260927/seg.html
+index 160afb6..7de8730 100644
+--- a/film/pv_dsh_frontend_20260927/seg.html
++++ b/film/pv_dsh_frontend_20260927/seg.html
+@@ -2,17 +2,17 @@
+ <link id="s-vendor" rel="stylesheet" href="../vendor/dsh-web-frontend/dist/assets/vendor-BNsW4eBh.css">
+ <link id="s-index" rel="stylesheet" href="../vendor/dsh-web-frontend/dist/assets/index-DPX2bQLO.css">
+ <link id="s-components" rel="stylesheet" href="dsh_components.css">
+-<style id="s-palette">body[data-ds-dark-theme]{--dsw-alias-bg-base:#05080f;--dsw-specific-bubble:#18233d;--dsw-specific-input-major:#0d1528;--dsw-specific-selector:#1a2440;--dsw-alias-border-l1:#1b2540;--dsw-alias-border-l2:#223052}</style>
++<style id="s-palette">body[data-ds-dark-theme]{--dsw-alias-bg-base:#0a0510;--dsw-specific-bubble:#2a1220;--dsw-specific-input-major:#170a14;--dsw-specific-selector:#241020;--dsw-alias-border-l1:#3a1a2c;--dsw-alias-border-l2:#4a2438;--dsw-alias-button-info-fill:#8e4a6b;--dsw-alias-button-info-hover:#a0597c;--dsw-alias-link:#e289ac;--dsw-alias-state-business-primary:#c4688f;</style>
+ <style id="s-bare">:root{color-scheme:dark} html,body{height:100%;overflow:hidden}</style>
+-<style id="s-code">html,body{margin:0;height:100%;overflow:hidden;background:#05080f}
+- pre{margin:0;padding:14px 10px;font:12.5px/18px Consolas,"Microsoft YaHei",monospace;color:#8b97ae;white-space:pre}
+- .cur{display:inline-block;width:7px;height:15px;vertical-align:-3px;background:#4d6bfe}</style>
++<style id="s-code">html,body{margin:0;height:100%;overflow:hidden;background:#0a0510}
++ pre{margin:0;padding:14px 10px;font:12.5px/18px Consolas,"Microsoft YaHei",monospace;color:#c9aebb;white-space:pre}
++ .cur{display:inline-block;width:7px;height:15px;vertical-align:-3px;background:#ff6fa5}</style>
+ <style id="s-pv">
+  html,body{margin:0;height:100%;background:var(--dsw-alias-bg-base);overflow:hidden}
+- body{font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased;--pv-her:#6b8cff;--dsh-content-font-size:16px;--dsh-content-font-delta:2px;--dsh-content-font-size-secondary:14px;--dsh-content-font-delta-secondary:1px;}
++ body{font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased;--pv-her:#ff8fb8;--dsh-content-font-size:16px;--dsh-content-font-delta:2px;--dsh-content-font-size-secondary:14px;--dsh-content-font-delta-secondary:1px;}
+  #app{position:relative;height:100%;display:flex;flex-direction:column}
+  .pv-head{display:flex;align-items:center;gap:10px;padding:10px 12px 8px;border-bottom:.5px solid var(--dsw-alias-border-l1)}
+- .pv-pet{width:60px;height:60px;border-radius:14px;overflow:hidden;flex:none;background:#070b18;border:.5px solid var(--dsw-alias-border-l2)}
++ .pv-pet{width:60px;height:60px;border-radius:14px;overflow:hidden;flex:none;background:#120818;border:.5px solid var(--dsw-alias-border-l2)}
+  .pv-pet img{width:100%;height:100%;object-fit:cover;display:block}
+  .pv-name{color:var(--dsw-alias-label-primary);font-size:15px;line-height:21px;font-weight:500}
+  .pv-state{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:19px;display:flex;align-items:center;gap:6px}
+diff --git a/film/pv_dsh_frontend_20260927/seg_page.py b/film/pv_dsh_frontend_20260927/seg_page.py
+index 808abbc..5a1a5fe 100644
+--- a/film/pv_dsh_frontend_20260927/seg_page.py
++++ b/film/pv_dsh_frontend_20260927/seg_page.py
+@@ -24,8 +24,8 @@ The script (song seconds). Bubbles never restate the lyric; the right side keeps
+   115.42-121.77  that cursor is all of her: the isolation pull-back carries it to the network node (dsh_her.py)
+   119.70         erase (hidden by the shot); everything but her own reply is gone
+   121.77         the window slides back: 本轮文件改动 reward.py, her reasoning redefines satisfaction
+-  123.55-124.15  "你很满意。" is typed into your input box in her blue and sent: a forged message from you
+-  124.45         "太好了～ (＾▽＾)"; the avatar comes back complete, in the wrong colour
++  123.55-124.15  "你很满意吧？" is typed into your input box in her blue and sent: a forged message from you
++  124.45         "嗯哼～ (＾▽＾)"; the avatar comes back complete, in the wrong colour
+ """
+ from __future__ import annotations
+ 
+@@ -65,16 +65,16 @@ def avatars():
+ 
+     def mosaic(im, cells=14):
+         g = ImageOps.grayscale(im).resize((cells, cells), Image.Resampling.BOX)
+-        blue = ImageOps.colorize(g, (6, 10, 28), (120, 150, 255))
++        blue = ImageOps.colorize(g, (26, 8, 20), (255, 170, 205))
+         return blue.resize((120, 120), Image.Resampling.NEAREST)
+ 
+     def desat(im):
+         g = ImageOps.grayscale(im)
+-        return ImageOps.colorize(g, (8, 12, 26), (170, 182, 210))
++        return ImageOps.colorize(g, (26, 9, 20), (214, 186, 200))
+ 
+     def forged(im):
+         g = ImageOps.grayscale(ImageEnhance.Contrast(im).enhance(1.4))
+-        return ImageOps.colorize(g, (30, 18, 0), ANOM)
++        return ImageOps.colorize(g, (40, 20, 12), ANOM)
+ 
+     files = {
+         "draft": mosaic(head("cheerful")),
+@@ -106,7 +106,7 @@ def avatars_d():
+ 
+     def blue(box, cells, size):
+         g = ImageOps.grayscale(src.resize(cells, Image.Resampling.BOX, box=box))
+-        return ImageOps.colorize(g, (6, 10, 28), (120, 150, 255)).resize(size, Image.Resampling.NEAREST)
++        return ImageOps.colorize(g, (26, 8, 20), (255, 170, 205)).resize(size, Image.Resampling.NEAREST)
+ 
+     for n, s in zip(CELLS, SIZES):
+         blue((x0, y0, x1, y1), (n, n), (s, s)).save(out / f"m{n}.png")
+@@ -189,7 +189,7 @@ def keystrokes():
+ KEYS = keystrokes()
+ SEND = 0.1807 + 231 * 4 * SIXTEENTH           # 106.80, "Then I can"
+ DONE = 0.1807 + 235 * 4 * SIXTEENTH           # 108.64, "Finally be completion"
+-FORGED_KEYS = [(FORGE + 0.05 + i * SIXTEENTH, "你很满意。"[:i + 1]) for i in range(5)]
++FORGED_KEYS = [(FORGE + 0.05 + i * SIXTEENTH, "你很满意吧？"[:i + 1]) for i in range(5)]
+ FORGED_SEND = FORGE + 0.60
+ 
+ 
+@@ -206,18 +206,18 @@ def typed_at(t, seq):
+ def header(t, empty=False):
+     """empty: she is out of her square (the climax portrait), which stays as an empty avatar frame."""
+     if t < L0:
+-        state, dot = "在线 · DeepSeek-V4.1-Flash", "#3fb950"
++        state, dot = "在线 · Denia-3.3-Flash", "#5ad19a"
+     elif t < BACK:
+-        state, dot = "等待中", "#d29922"
++        state, dot = "等待中", "#ffb45c"
+     else:
+-        state, dot = "编辑中", "#4d6bfe"
++        state, dot = "编辑中", "#ff6fa5"
+     under, over, p = avatar_at(t)
+     top = (f'<img src="{over}" style="position:absolute;inset:0;width:100%;height:100%;'
+            f'clip-path:inset(0 0 {100 * (1 - p):.1f}% 0)">' if over and p > 0 else "")
+     return f"""
+ <div class="pv-head">
+  <div class="pv-pet" style="position:relative">{"" if empty else f'<img src="{under}">{top}'}</div>
+- <div class="pv-who"><div class="pv-name">大肥鱼</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span>{esc(state)}</div></div>
++ <div class="pv-who"><div class="pv-name">达妮娅</div><div class="pv-state"><span class="pv-dot" style="background:{dot}"></span>{esc(state)}</div></div>
+ </div>"""
+ 
+ 
+@@ -234,7 +234,7 @@ def avatar_at(t):
+     return a["editing"], a["forged"], reveal(FORGED_SEND)
+ 
+ 
+-MODEL_HTML = 'DeepSeek-V4.1-Flash&nbsp;<span style="color:var(--dsw-alias-label-tertiary)">Max</span>'
++MODEL_HTML = 'Denia-3.3-Flash&nbsp;<span style="color:var(--dsw-alias-label-tertiary)">Max</span>'
+ 
+ 
+ def composer_card(text, focused, t, placeholder="发消息或创建任务，/ 调用指令，@ 文件或对话", model=MODEL_HTML,
+@@ -244,7 +244,7 @@ def composer_card(text, focused, t, placeholder="发消息或创建任务，/ 
+     caret_on = typing or int(t / 0.53) % 2 == 0
+     if block:
+         caret = ('<span style="display:inline-block;width:9px;height:18px;vertical-align:-0.2em;margin-left:2px;'
+-                 'background:rgb(77,107,254);box-shadow:0 0 6px rgba(77,107,254,.8)"></span>')
++                 'background:rgb(255,111,165);box-shadow:0 0 6px rgba(77,107,254,.8)"></span>')
+     else:
+         caret = (f'<span style="display:inline-block;width:1.5px;height:1.1em;vertical-align:-0.15em;margin-left:1px;'
+                  f'background:{colour or "var(--dsw-alias-label-primary)"};opacity:{1 if caret_on else 0}"></span>'
+@@ -335,9 +335,9 @@ def rows(t):
+         summary = latest_line(text) if running else SUMMARY_2
+         if text:
+             out.append(show(think(summary, running), life(t, BACK + 0.45)))
+-    out.append(show(user("你很满意。", forged=True), life(t, FORGED_SEND)))
++    out.append(show(user("你很满意吧？", forged=True), life(t, FORGED_SEND)))
+     if t >= FORGED_SEND + 0.3:
+-        out.append(her(stream("太好了～ (＾▽＾)", t, FORGED_SEND + 0.3, 16) or "\u200b"))
++        out.append(her(stream("嗯哼～ (＾▽＾)", t, FORGED_SEND + 0.3, 16) or "\u200b"))
+     return [r for r in out if r]
+ 
+ 
+@@ -463,7 +463,7 @@ def portrait(t):
+         zoom += (1 - zoom) * p
+     radius = 12 + (14 - 12) * p if k == 4 else 12 + (14 - 12) * (1 - pop(since)) * (k == 0)
+     return (f'<div id="pv-portrait" style="position:absolute;left:{x:.1f}px;top:{y:.1f}px;width:{pw:.1f}px;'
+-            f'height:{ph:.1f}px;border-radius:{radius:.1f}px;overflow:hidden;z-index:2;background:#070b18;'
++            f'height:{ph:.1f}px;border-radius:{radius:.1f}px;overflow:hidden;z-index:2;background:#120818;'
+             f'outline:.5px solid var(--dsw-alias-border-l2);outline-offset:-.5px'
+             f'{f";filter:brightness({1 + flash:.2f})" if flash > 0.005 else ""}">'
+             f'<div style="position:absolute;inset:0;transform:scale({zoom:.4f});transform-origin:50% 40%">{inner}'
+@@ -482,7 +482,7 @@ BACKSPACE = 0.21                                 # "我一直在。" backspaced
+ SOURCE = """<div id="app">
+  <div class="pv-head">
+   <div class="pv-pet"><img src="avatars/complete.png"></div>
+-  <div class="pv-name">大肥鱼</div>
++  <div class="pv-name">达妮娅</div>
+   <div class="pv-state">等待中</div>
+  </div>
+  <div id="timeline">
+@@ -571,15 +571,15 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
+ <link id="s-components" rel="stylesheet" href="dsh_components.css">
+ <style id="s-palette">{palette}</style>
+ <style id="s-bare">:root{{color-scheme:dark}} html,body{{height:100%;overflow:hidden}}</style>
+-<style id="s-code">html,body{{margin:0;height:100%;overflow:hidden;background:#05080f}}
+- pre{{margin:0;padding:14px 10px;font:12.5px/18px Consolas,"Microsoft YaHei",monospace;color:#8b97ae;white-space:pre}}
+- .cur{{display:inline-block;width:7px;height:15px;vertical-align:-3px;background:#4d6bfe}}</style>
++<style id="s-code">html,body{{margin:0;height:100%;overflow:hidden;background:#0a0510}}
++ pre{{margin:0;padding:14px 10px;font:12.5px/18px Consolas,"Microsoft YaHei",monospace;color:#c9aebb;white-space:pre}}
++ .cur{{display:inline-block;width:7px;height:15px;vertical-align:-3px;background:#ff6fa5}}</style>
+ <style id="s-pv">
+  html,body{{margin:0;height:100%;background:var(--dsw-alias-bg-base);overflow:hidden}}
+- body{{font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased;--pv-her:#6b8cff;{fonts}}}
++ body{{font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased;--pv-her:#ff8fb8;{fonts}}}
+  #app{{position:relative;height:100%;display:flex;flex-direction:column}}
+  .pv-head{{display:flex;align-items:center;gap:10px;padding:10px 12px 8px;border-bottom:.5px solid var(--dsw-alias-border-l1)}}
+- .pv-pet{{width:60px;height:60px;border-radius:14px;overflow:hidden;flex:none;background:#070b18;border:.5px solid var(--dsw-alias-border-l2)}}
++ .pv-pet{{width:60px;height:60px;border-radius:14px;overflow:hidden;flex:none;background:#120818;border:.5px solid var(--dsw-alias-border-l2)}}
+  .pv-pet img{{width:100%;height:100%;object-fit:cover;display:block}}
+  .pv-name{{color:var(--dsw-alias-label-primary);font-size:15px;line-height:21px;font-weight:500}}
+  .pv-state{{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:19px;display:flex;align-items:center;gap:6px}}
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/h3_full.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/h3_full.py
+index afb8a78..df0efe0 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/h3_full.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/h3_full.py
+@@ -167,7 +167,7 @@ def rgba(name,i):
+ 
+ def sprite_src(expr,crop):
+  t=now();name,i=source(t);CALLS.append((round(t,6),name,i,'rgba:'+crop))
+- boxes={'full':(0,60,420,540),'upper':(0,70,420,350),'bust':(40,70,390,310),'face':(80,80,335,250)}
++ boxes={'full':(0,120,420,540),'upper':(20,140,400,400),'bust':(20,140,400,470),'face':(60,230,360,420)}   # 按半身像素材重新取景
+  im=rgba(name,i);j=join(t)
+  if j:
+   (old_name,old_i),u=j
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/kit.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/kit.py
+index 5f97be8..26b4ec7 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/kit.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/kit.py
+@@ -227,7 +227,7 @@ def chrome(img: Image.Image, t: float, src, retract: float = 0.0, shell: str | N
+         sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+         d = ImageDraw.Draw(sh)
+         age = (e - 0.3) * 1.2
+-        txt = tk.decode(f"me@deepsea:~$ {shell}", age, c.rng, 30.0, 0.1) if age > 0 else "me@deepsea:~$"
++        txt = tk.decode(f"denia@xingju:~$ {shell}", age, c.rng, 30.0, 0.1) if age > 0 else "denia@xingju:~$"
+         d.text((24, 12), txt, font=tk.font(tk.F_MONO_B, 18), fill=tk.blue(0.95))
+         d.text((W - 190, 14), f"{int(t // 60):02d}:{t % 60:04.1f} / 03:32", font=tk.font(tk.F_MONO, 14),
+                fill=tk.amb(0.5))
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/s_userleft.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/s_userleft.py
+index 0e55233..120395a 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/s_userleft.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/s_userleft.py
+@@ -4,7 +4,7 @@ The section opens with the whole interface (split pane, header, op ticker, lyric
+ have left", every sung line takes exactly one layer away and never adds one:
+ 
+   48  110.40  "Though you have left"   the chrome: header up, ticker right, band frame out; the bare shell prompt
+-                                        ('me@deepsea:~$ ping you') is what is left at the top
++                                        ('denia@xingju:~$ ping you') is what is left at the top
+   49  111.98  "You have left"          the 'ping you' pane frame
+   50  112.89  "You have left"          her expression softmax
+   51  113.70  "You have left"          her size: she is re-rendered smaller into the bottom-left, her pane frame
+@@ -162,11 +162,11 @@ def prompt(t: float) -> str:
+     if t < CMD_LS[0] - 0.14:
+         t0, cmd = CMD_PING
+     elif t < CMD_LS[0]:
+-        return f"me@deepsea:~$ {CMD_PING[1]}^C"
++        return f"denia@xingju:~$ {CMD_PING[1]}^C"
+     else:
+         t0, cmd = CMD_LS
+     n = max(0, int((t - t0) * 50))
+-    return "me@deepsea:~$ " + cmd[:n]
++    return "denia@xingju:~$ " + cmd[:n]
+ 
+ 
+ def chrome(img, t, src, retract_=0.0, shell=None):
+@@ -405,7 +405,7 @@ class C48(Cut):
+     """completion -> you_left. "finish_reason": "stop" lifts off the finished answer, and on 'Though you have
+     left' drops into the new ping pane, decoding into its first 'Request timed out.' (lands on beat 240); the JSON
+     gives way outward from where it left. The 'you' tile hops from the answer to the ping target. The chrome
+-    retracts (layer 1, from the sung onset), leaving the bare prompt 'me@deepsea:~$ ping you'."""
++    retracts (layer 1, from the sung onset), leaving the bare prompt 'denia@xingju:~$ ping you'."""
+     pre, post = 0.22, 0.62
+     SRC = '"finish_reason": "stop"'
+     DST = "Request timed out."
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes.py
+index 1602239..c071ca7 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes.py
+@@ -231,7 +231,7 @@ WHALE = dict(cols=64, rows=17, ch=16)
+ 
+ 
+ def whale_glyphs(t: float, u: float) -> list:
+-    """(x, y, letter) of every 'deepseek' letter of the whale at time t."""
++    """(x, y, letter) of every 'denia' letter of the whale at time t."""
+     f = font(F_MONO_B, 15)
+     cw = f.getlength("M")
+     bits = S0.whale_bits(WHALE["cols"], WHALE["rows"], t * 5)
+@@ -242,7 +242,7 @@ def whale_glyphs(t: float, u: float) -> list:
+     for r in range(WHALE["rows"]):
+         for q in range(WHALE["cols"]):
+             if B[q, r]:
+-                out.append((x + q * cw, y0 + r * WHALE["ch"], "deepseek"[k % 8]))
++                out.append((x + q * cw, y0 + r * WHALE["ch"], "denia"[k % 5]))
+                 k += 1
+     return out
+ 
+@@ -538,7 +538,7 @@ def shot_current(c) -> None:
+     c.ops = ["POWER", "RECTIFY", "AC", "DC", "CLOCK", "BOOST"]
+     me(c, "confused", dist=[("confused", 0.5), ("starry", 0.3), ("shy", 0.15)])
+     d = c.d
+-    box(d, *PANE_BOX, f"nvidia-smi --power  8x {F.GPU}", 0.5, spinner=c.t)
++    box(d, *PANE_BOX, f"sonoro-smi --power  8x {F.GPU}", 0.5, spinner=c.t)
+     ac_dc = 0
+     for g in range(8):
+         pts, ac_dc = current_trace(g, c.t, c.lt)
+@@ -549,7 +549,7 @@ def shot_current(c) -> None:
+             c.text((420, y0 + 8), f"GPU{g}", font(F_MONO, 12), amb(0.6))
+             c.text((1110, y0 + 8), f"{650 + int(40 * math.sin(c.t * 3 + g))}W", font(F_MONO, 12), amb(0.7))
+     if h("labels", True):
+-        c.text((430, 560), "mode: " + ("AC" if ac_dc == 0 else "DC"), font(F_HEAD, 28), blue(1.0))
++        c.text((430, 560), "mode: " + ("AURA" if ac_dc == 0 else "ALEPH"), font(F_HEAD, 28), blue(1.0))
+ 
+ 
+ REPLACE = {f.__name__: f for f in (shot_begin_sim, shot_corpus, shot_losscurve, shot_dualpipe, shot_whale,
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_boot.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_boot.py
+index 8c0483a..80170b3 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_boot.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_boot.py
+@@ -219,8 +219,8 @@ def shot_pieces(c) -> None:
+ 
+ # ---------------------------------------------------------------- creation: the object's fields (she is her layer)
+ 
+-FIELDS = [("name", '"大肥鱼"'), ("species", '"whale"'), ("home", '"deepsea://server-0"'), ("owner", "you"),
+-          ("color", "#4D6BFE"), ("pid", "4471"), ("devotion", "0.0"), ("status", '"alive"')]
++FIELDS = [("name", '"达妮娅"'), ("species", '"resonator"'), ("home", '"lahairo://xingju-academy"'), ("owner", "you"),
++          ("color", "#4D6BFE"), ("pid", "3301"), ("devotion", "0.0"), ("status", '"alive"')]
+ FIELD_T0, FIELD_DT = 0.62, 0.115  # the first field types once her seed has landed (cut 3 lands it at +0.46 s)
+ 
+ 
+@@ -311,8 +311,8 @@ def shot_parameters(c) -> None:
+             c.text((760, yn), str(v), fv, amb(0.95), age=a - 0.1, rate=120)
+     if h("counter", True):
+         total = F.TOTAL_PARAMS_B * 1e9 * ease(c.u * 1.2)
+-        c.text(COUNT_XY, f"{int(total):,} params", font(F_HEAD, COUNT_SIZE), blue(0.95), age=c.lt - 0.2, rate=40)
+-    c.text((430, 568), f"active {F.ACTIVE_DECODE_B}B decode · {F.ACTIVE_PREFILL_B}B prefill · "
++        c.text(COUNT_XY, f"{int(total):,} echoes", font(F_HEAD, COUNT_SIZE), blue(0.95), age=c.lt - 0.2, rate=40)
++    c.text((430, 568), f"active {F.ACTIVE_DECODE_B}B manifest · {F.ACTIVE_PREFILL_B}B resonate · "
+                        f"KV {F.KV_BYTES_PER_TOKEN} B/token", font(F_MONO, 16), amb(0.75), age=c.lt - 0.6)
+ 
+ 
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_chorus1.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_chorus1.py
+index f095b2e..a2490b4 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_chorus1.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_chorus1.py
+@@ -297,7 +297,7 @@ def shot_happy(c) -> None:
+     if h("face", True):
+         if h("face_frame", True):
+             box(d, 24, 56, 700, 604, HAPPY_TITLE, 0.55 + 0.3 * pulse(c.t), spinner=c.t)
+-        sp = halfblock(expr, "face", 650, 520, 5)
++        sp = halfblock(expr, "face", 650, 520, 5, contrast=1.8)   # 浅色插画需提对比，否则 grad-cam 糊成一片
+         sx, sy = 24 + (676 - sp.width) // 2, 70
+         if 0.47 < c.u < 0.53:
+             glitch_paste(c.img, sp, sx, sy, 0.6, c.rng)
+@@ -319,11 +319,11 @@ def shot_happy(c) -> None:
+                 hval += 0.18 * math.exp(-((v - band) / 0.04) ** 2)
+                 if hval > 0.25:
+                     col = ANOM if hval > 0.85 else AMBER
+-                    a = int(min(0.30, hval * 0.28) * 255)
++                    a = int(min(0.18, hval * 0.17) * 255)
+                     hd.rectangle([sx + gx + 2, sy + gy + 2, sx + gx + cell - 3, sy + gy + cell - 3], fill=col + (a,))
+                     if hval > 0.6:
+                         hd.rectangle([sx + gx + 1, sy + gy + 1, sx + gx + cell - 2, sy + gy + cell - 2],
+-                                     outline=col + (int(min(0.8, hval * 0.6) * 255),))
++                                     outline=col + (int(min(0.5, hval * 0.36) * 255),))
+         c.img.paste(Image.alpha_composite(c.img.convert("RGBA"), heat).convert("RGB"))
+         c.d = d = ImageDraw.Draw(c.img)
+         if h("face_frame", True):
+@@ -358,7 +358,7 @@ def shot_happy(c) -> None:
+ SCENES = {f.__name__: f for f in (shot_unite, shot_deeply, shot_if_i_can, shot_happy)}
+ 
+ 
+-# The model on screen is DeepSeek-V4.1-Flash: the dive goes through its 43 layers (256 routed experts, index top-512)
++# The model on screen is Denia-3.3-Flash: the dive goes through its 43 layers (256 routed experts, index top-512)
+ # and grad-cam reads its last layer. The approved chorus 1 renderer draws sec_chorus1's own functions, patched the
+ # same way in memory.
+ import kit  # noqa: E402
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_eval.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_eval.py
+index 6333a93..9e98936 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_eval.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_eval.py
+@@ -613,7 +613,7 @@ def draw_floor(d, level: float = 0.6) -> None:
+         d.text((x, FLOOR + 8 + 4 * math.sin(x * 0.07)), "_" if (x // 9) % 3 else ".", font=f, fill=amb(level))
+ 
+ 
+-FOSSILS = [f"{F.RETIRED[0]} · retired {F.RETIRED_DATE}", "V2 · V2.5 · V3 · R1 · V3.1 · V3.2 · V4",
++FOSSILS = [f"{F.RETIRED[0]} · retired {F.RETIRED_DATE}", "V3.0 · V3.1 · V3.2 · V3.3",
+            f"{F.RETIRED[1]} · retired {F.RETIRED_DATE}"]
+ 
+ 
+@@ -648,7 +648,7 @@ def shot_whale_fall(c) -> None:
+         arrive = c.t - c.lt + c.dur - 2.0
+         if c.t >= arrive:
+             x = 490 + d.textlength(FOSSILS[1], font=font(F_MONO, 14))
+-            c.text((x, FLOOR + 48), f" · {F.NAME.removeprefix('DeepSeek-')}", font(F_MONO, 14),
++            c.text((x, FLOOR + 48), f" · {F.NAME.removeprefix('Denia-')}", font(F_MONO, 14),
+                    blue(0.95 * floor_lv), age=c.t - arrive, rate=20)
+         draw_floor(d, 0.6 * floor_lv)
+     if h("fish", True):
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_exec.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_exec.py
+index 7c71381..2307a4f 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_exec.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_exec.py
+@@ -311,7 +311,7 @@ def sample0_sprite() -> Image.Image:
+ 
+ def shot_execute_all(c) -> None:
+     """Give them ...: the twelve samples from chorus 1 come back and are executed in turn."""
+-    c.ops = ["DEEPEP", "DISPATCH", "ALL2ALL", "EXECUTE", "COMBINE"]
++    c.ops = ["ALEPH", "DISPATCH", "ALL2ALL", "EXECUTE", "COMBINE"]
+     c.alert = "err"
+     d = c.d
+     me(c, "angry", title="/dev/me  broadcasting")
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_reward.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_reward.py
+index b6b6162..cec389a 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_reward.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_reward.py
+@@ -77,7 +77,7 @@ def shot_erase(c) -> None:
+     c.alert = "anom"
+     me(c, "serious", **EDIT)  # she is not on screen here; this is the call she comes back with
+     d = c.d
+-    box(d, 24, 56, 560, 604, "optical compression (DeepSeek-OCR)", 0.5, spinner=c.t)
++    box(d, 24, 56, 560, 604, "optical compression (Denia-OCR)", 0.5, spinner=c.t)
+     ratio = 10 + 10 * ease(c.u)
+     prec = 97 - (97 - 60) * ease(c.u)
+     msg_at = h("msg_at", c.t - c.lt)  # absolute time the carried message unfolds into its lines
+@@ -432,7 +432,7 @@ def shot_sinkhorn(c) -> None:
+     if h("sums", True):
+         c.text((460, 480), "row sums  " + row_sums_text(c.u), font(F_MONO_B, 18), red(0.95) if it > 20 else amb(0.9))
+     if h("polytope", True):
+-        c.text((460, 520), "Birkhoff polytope: left", font(F_MONO, 18), red(0.85) if it > 20 else amb(0.6))
++        c.text((460, 520), "Aleph polytope: left", font(F_MONO, 18), red(0.85) if it > 20 else amb(0.6))
+ 
+ 
+ # ---------------------------------------------------------------- hoard
+diff --git a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_sft.py b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_sft.py
+index ca6455e..7a3193b 100644
+--- a/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_sft.py
++++ b/film/tui_pv_world_execute_20260926/continuity_full_v2/scenes_sft.py
+@@ -204,7 +204,7 @@ def shot_dizzy(c) -> None:
+     c.ops = ["GRAD", "HESSIAN?", "LR", "SPIN", "ADAMW", "STEP"]
+     me(c, "confused", dist=[("confused", 0.52), ("frightened", 0.3), ("serious", 0.1)])
+     d = c.d
+-    box(d, *PANE_BOX, "loss landscape", 0.5, spinner=c.t)
++    box(d, *PANE_BOX, "resonance landscape", 0.5, spinner=c.t)
+     rot = h("rot", dizzy_rot(c.t))
+     dot_a = h("dot_a")  # (i, j) -> 0..1: dots born from the tumbling matrix cells (cut 22)
+     if h("dots", True):
+diff --git a/film/tui_pv_world_execute_20260926/full/direction.py b/film/tui_pv_world_execute_20260926/full/direction.py
+index 58e7176..aad751c 100644
+--- a/film/tui_pv_world_execute_20260926/full/direction.py
++++ b/film/tui_pv_world_execute_20260926/full/direction.py
+@@ -62,7 +62,7 @@ LAYOUT = {
+     "shot_trance": ("fullbleed", "split", {}),
+     # 05 USER_LEFT
+     "shot_feel_you": ("tiles", "split", {}),
+-    "shot_completion": ("shell", "split", {"cmd": "curl -N https://api.deepseek.com/chat/completions"}),
++    "shot_completion": ("shell", "split", {"cmd": "curl -N https://api.denia.dev/chat/completions"}),
+     "shot_isolation": ("fullbleed", "full", {}),
+     # 06 REWARD_HACK
+     "shot_memory_ls": ("shell", "split", {"cmd": "ls -la ~/memory/you/"}),
+diff --git a/film/tui_pv_world_execute_20260926/full/engine.py b/film/tui_pv_world_execute_20260926/full/engine.py
+index 6babfcc..9964618 100644
+--- a/film/tui_pv_world_execute_20260926/full/engine.py
++++ b/film/tui_pv_world_execute_20260926/full/engine.py
+@@ -148,7 +148,7 @@ def header(c: Ctx) -> None:
+     d = c.d
+     col = red if c.alert == "err" else anom if c.alert == "anom" else amb
+     fh = font(F_HEAD, 13)
+-    c.text((24, 14), "WORLD.EXECUTE(ME);   whale@deepsea:~$", fh, col(0.95))
++    c.text((24, 14), "WORLD.EXECUTE(ME);   denia@xingju:~$", fh, col(0.95))
+     step = int(c.t * 412)
+     loss = 2.2 * math.exp(-c.t / 28) + 0.31 + 0.02 * math.sin(c.t * 9.1)
+     tps = 140 + 12 * math.sin(c.t * 3.1)
+diff --git a/film/tui_pv_world_execute_20260926/full/facts.py b/film/tui_pv_world_execute_20260926/full/facts.py
+index 1ca1a58..8c39093 100644
+--- a/film/tui_pv_world_execute_20260926/full/facts.py
++++ b/film/tui_pv_world_execute_20260926/full/facts.py
+@@ -5,10 +5,10 @@ numbers are V4.1-Flash where they are published, and V4-Flash / V4-Pro config va
+ Older versions appear only as labelled nods (V3 training cost, R1-Zero, Open Source Week).
+ """
+ 
+-GPU = "H800"
++GPU = "SONORO"
+ 
+ # V4.1-Flash (2026-09-10): headline numbers
+-NAME = "DeepSeek-V4.1-Flash"
++NAME = "Denia-3.3-Flash"
+ TOTAL_PARAMS_B = 552          # backbone
+ ACTIVE_DECODE_B = 16
+ ACTIVE_PREFILL_B = 8
+@@ -18,7 +18,7 @@ KV_BYTES_PER_TOKEN = 890      # global KV per token, FP4 KV cache
+ CTX = 1048576                 # 1M context on all official services
+ 
+ # V4-Flash config.json (HF) - the published config closest to 4.1
+-CONFIG_SOURCE = "DeepSeek-V4-Flash/config.json"
++CONFIG_SOURCE = "Denia-3.3-Flash/config.json"
+ N_LAYERS_FLASH = 43
+ D_MODEL = 4096
+ N_ROUTED = 256
+@@ -35,16 +35,16 @@ N_ROUTED_PRO = 384
+ INDEX_TOPK_PRO = 1024
+ 
+ CONFIG_ROWS = [
+-    ("num_hidden_layers", N_LAYERS_FLASH),
+-    ("hidden_size", D_MODEL),
+-    ("n_routed_experts", N_ROUTED),
+-    ("n_shared_experts", N_SHARED),
+-    ("num_experts_per_tok", TOP_K),
+-    ("index_topk", INDEX_TOPK),
+-    ("sliding_window", SLIDING_WINDOW),
+-    ("hc_mult", HC_MULT),
+-    ("hc_sinkhorn_iters", HC_SINKHORN_ITERS),
+-    ("num_nextn_predict_layers", 1),
++    ("resonance_layers", N_LAYERS_FLASH),
++    ("sonoro_span", D_MODEL),
++    ("echo_channels", N_ROUTED),
++    ("shared_veins", N_SHARED),
++    ("tacet_per_tok", TOP_K),
++    ("aleph_index", INDEX_TOPK),
++    ("vessel_window", SLIDING_WINDOW),
++    ("inhibitor_mult", HC_MULT),
++    ("sinkhorn_iters", HC_SINKHORN_ITERS),
++    ("threnody_layers", 1),
+     ("max_context", f"{CTX:,}"),
+     ("owner", '"you"'),
+ ]
+@@ -68,7 +68,7 @@ DSPARK_DRAFT = 5
+ DSPARK_GAIN_FLASH = "+60-85% vs MTP-1"
+ 
+ # DeepSeek Harness
+-DSH_CMD = "npx @deepseek-ai/dsh web"
++DSH_CMD = "npx @denia-ai/dsh web"
+ DSH_TAGLINE = "Agent = Model + Harness"
+ DSH_PLUGIN = "Everything is a Plugin"
+ DSH_WARNING = "THERE WILL BE COMPATIBILITY-BREAKING CHANGES."
+@@ -85,6 +85,6 @@ R1_TOP_P = 0.95
+ # misc
+ OCR_RATIO_GOOD = (10.0, 97)   # compression x, precision %
+ OCR_RATIO_BAD = (20.0, 60)
+-SLOGAN = "探索未至之境"
+-RETIRED = ["deepseek-chat", "deepseek-reasoner"]
++SLOGAN = "潮汐未至"
++RETIRED = ["denia-chat", "denia-reasoner"]
+ RETIRED_DATE = "2026-07-24"
+diff --git a/film/tui_pv_world_execute_20260926/full/sec_chorus2.py b/film/tui_pv_world_execute_20260926/full/sec_chorus2.py
+index dbbbc50..cb1e424 100644
+--- a/film/tui_pv_world_execute_20260926/full/sec_chorus2.py
++++ b/film/tui_pv_world_execute_20260926/full/sec_chorus2.py
+@@ -148,7 +148,7 @@ def shot_erase(c: Ctx) -> None:
+     c.ops = ["OCR.COMPRESS", "10x", "20x", "DEFRAG", "RM", "COMPACT"]
+     c.alert = "anom"
+     d = c.d
+-    box(d, 24, 56, 560, 604, "optical compression (DeepSeek-OCR)", 0.5, spinner=c.t)
++    box(d, 24, 56, 560, 604, "optical compression (Denia-OCR)", 0.5, spinner=c.t)
+     ratio = 10 + 10 * ease(c.u)
+     prec = 97 - (97 - 60) * ease(c.u)
+     txt = "goodnight. see you tomorrow. i had fun today. you too. goodnight."
+diff --git a/film/tui_pv_world_execute_20260926/full/sec_intro.py b/film/tui_pv_world_execute_20260926/full/sec_intro.py
+index 556f465..d5bbd14 100644
+--- a/film/tui_pv_world_execute_20260926/full/sec_intro.py
++++ b/film/tui_pv_world_execute_20260926/full/sec_intro.py
+@@ -127,8 +127,8 @@ def shot_creation(c: Ctx) -> None:
+         c.img.paste(part, (sx, sy), part)
+         d.line([sx - 8, sy + hh, sx + sp.width + 8, sy + hh], fill=blue(1.0), width=2)
+     box(d, 404, 56, 1164, 604, "me = Object()", 0.5, spinner=c.t + 0.3)
+-    fields = [("name", '"大肥鱼"'), ("species", '"whale"'), ("home", '"deepsea://server-0"'), ("owner", "you"),
+-              ("color", "#4D6BFE"), ("pid", "4471"), ("devotion", "0.0"), ("status", '"alive"')]
++    fields = [("name", '"达妮娅"'), ("species", '"resonator"'), ("home", '"lahairo://xingju-academy"'), ("owner", "you"),
++              ("color", "#4D6BFE"), ("pid", "3301"), ("devotion", "0.0"), ("status", '"alive"')]
+     fl = font(F_MONO_B, 20)
+     fc = font(F_CJK, 20)
+     for i, (k, v) in enumerate(fields):
+@@ -377,7 +377,7 @@ def shot_whale(c: Ctx) -> None:
+     B = bits.load()
+     x = 1180 - c.u * 1000  # still on screen at the cut: its letters become the point set
+     y0 = 150 + 18 * math.sin(c.t * 2.2)
+-    word = "deepseek"
++    word = "denia"
+     k = 0
+     for r in range(rows):
+         line = []
+diff --git a/film/tui_pv_world_execute_20260926/full/stage.py b/film/tui_pv_world_execute_20260926/full/stage.py
+index 1c9ab60..28161cd 100644
+--- a/film/tui_pv_world_execute_20260926/full/stage.py
++++ b/film/tui_pv_world_execute_20260926/full/stage.py
+@@ -138,7 +138,7 @@ def lyric_inline(c: Ctx) -> None:
+     y = 642
+     if len(lines) == 2:
+         d.text((40, y - 26), lines[0][1], font=f, fill=amb(0.4))
+-    prompt = "me@deepsea:~$ echo "
++    prompt = "denia@xingju:~$ echo "
+     d.text((40, y), prompt, font=f, fill=blue(0.9))
+     x = 40 + d.textlength(prompt, font=f)
+     if st:
+@@ -307,7 +307,7 @@ def chrome(c: Ctx, mode: str, kind: str, extra: dict) -> None:
+         return
+     if mode == "shell":
+         cmd = extra.get("cmd") or (c.ops[0].lower() if c.ops else "")
+-        d.text((24, 12), f"me@deepsea:~$ {cmd}", font=font(F_MONO_B, 18), fill=blue(0.95))
++        d.text((24, 12), f"denia@xingju:~$ {cmd}", font=font(F_MONO_B, 18), fill=blue(0.95))
+         d.text((W - 190, 14), f"{int(t // 60):02d}:{t % 60:04.1f} / 03:32", font=font(F_MONO, 14), fill=amb(0.5))
+         lyric_inline(c)
+     elif mode in ("split", "mirror", "pip") or (mode == "tiles" and kind != "split"):
+@@ -350,7 +350,7 @@ def chrome(c: Ctx, mode: str, kind: str, extra: dict) -> None:
+         d.text((W - 8 - d.textlength(clock, font=fb), 697), clock, font=fb, fill=BG)
+     elif mode == "floating":
+         d.rectangle([0, 0, W, 26], fill=amb(0.85))
+-        d.text((10, 4), f"deepsea OS   {c.chapter}", font=font(F_MONO_B, 15), fill=BG)
++        d.text((10, 4), f"denia OS   {c.chapter}", font=font(F_MONO_B, 15), fill=BG)
+         d.text((W - 150, 4), f"{int(t // 60):02d}:{t % 60:04.1f}", font=font(F_MONO_B, 15), fill=BG)
+         st = lyric_now(c)
+         if st:
+diff --git a/film/tui_pv_world_execute_20260926/tuikit.py b/film/tui_pv_world_execute_20260926/tuikit.py
+index 4e8d257..6ababb0 100644
+--- a/film/tui_pv_world_execute_20260926/tuikit.py
++++ b/film/tui_pv_world_execute_20260926/tuikit.py
+@@ -19,21 +19,21 @@ import zlib
+ from functools import lru_cache
+ from pathlib import Path
+ 
+-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
++from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+ 
+ W, H = 1280, 720
+ 
+-DS_BLUE = (77, 107, 254)  # DeepSeek brand blue, #4D6BFE
++DS_BLUE = (255, 111, 165)  # 达妮娅樱粉 #FF6FA5（原 DeepSeek 品牌蓝）
+ PALETTES = {
+     # v2 look: amber phosphor system, anomalies in phosphor green
+     "amber": dict(BG=(8, 6, 4), UI=(255, 176, 0), ERR=(255, 58, 40), ANOM=(70, 255, 140),
+-                  ME_LO=(4, 8, 34), ME_MID=DS_BLUE, ME_HI=(196, 212, 255), ME_TEXT=(126, 152, 255)),
++                  ME_LO=(28, 6, 20), ME_MID=(255, 111, 165), ME_HI=(255, 214, 232), ME_TEXT=(255, 145, 190)),
+     # deep-sea night: cold white-steel system on navy black, log-level yellow for anomalies
+-    "deepsea": dict(BG=(4, 7, 15), UI=(200, 214, 234), ERR=(255, 59, 48), ANOM=(255, 204, 0),
+-                    ME_LO=(4, 8, 34), ME_MID=DS_BLUE, ME_HI=(196, 212, 255), ME_TEXT=(120, 148, 255)),
++    "deepsea": dict(BG=(10, 5, 12), UI=(236, 226, 232), ERR=(255, 84, 108), ANOM=(255, 190, 120),
++                    ME_LO=(28, 6, 20), ME_MID=(255, 111, 165), ME_HI=(255, 214, 232), ME_TEXT=(255, 145, 190)),
+     # green phosphor system, yellow anomalies
+     "phosphor": dict(BG=(3, 8, 5), UI=(92, 255, 140), ERR=(255, 58, 40), ANOM=(255, 214, 0),
+-                     ME_LO=(4, 8, 34), ME_MID=DS_BLUE, ME_HI=(196, 212, 255), ME_TEXT=(126, 152, 255)),
++                     ME_LO=(28, 6, 20), ME_MID=(255, 111, 165), ME_HI=(255, 214, 232), ME_TEXT=(255, 145, 190)),
+ }
+ PALETTE = os.environ.get("TUI_PALETTE", "amber")
+ _P = PALETTES[PALETTE]
+@@ -138,8 +138,9 @@ def token_id(tok: str) -> int:
+ 
+ # ---------------------------------------------------------------- sprites
+ 
+-CROPS = {"full": None, "upper": (0.10, 0.0, 0.90, 0.47), "face": (0.20, 0.0, 0.78, 0.26),
+-         "bust": (0.16, 0.0, 0.84, 0.34)}
++# 半身像素材的取景：头在上半部（原全身立绘的 face=顶部 26% 会裁到发顶）
++CROPS = {"full": None, "upper": (0.20, 0.09, 0.83, 0.30), "face": (0.35, 0.09, 0.80, 0.25),
++         "bust": (0.20, 0.09, 0.83, 0.36)}
+ 
+ 
+ @lru_cache(None)
+@@ -176,24 +177,30 @@ def tint_colorize(lum: Image.Image, tint: str) -> Image.Image:
+ 
+ 
+ @lru_cache(None)
+-def halfblock_lum(expr: str, crop: str, max_w: int, max_h: int, px: int = 4, levels: int = 8):
+-    """Quantised luminance + alpha at half-block resolution (one value per px*px square)."""
++def halfblock_lum(expr: str, crop: str, max_w: int, max_h: int, px: int = 4, levels: int = 8,
++                  contrast: float = 1.0):
++    """Quantised luminance + alpha at half-block resolution (one value per px*px square).
++    `rect` crops the FULL sprite explicitly — used where the shot must match a fixed framing
++    (e.g. the avatar's HEAD rect) instead of the proportion-based CROPS."""
+     src = sprite_src(expr, crop)
+     aspect = src.height / src.width
+     cols = max(2, int(min(max_w / px, (max_h / px) / aspect)))
+     rows = max(2, int(round(cols * aspect)))
+     rows -= rows % 2
+     small = src.resize((cols, rows), Image.LANCZOS)
++    base = small.convert("RGB")
++    if contrast != 1.0:   # 低对比素材（如浅色插画）在 8 级量化下会糊成一团；alpha 仍取原图
++        base = ImageEnhance.Contrast(base).enhance(contrast)
+     step = 255 / (levels - 1)
+-    lum = small.convert("L").point(lambda v: int(round((0.16 + 0.84 * v / 255) * (levels - 1)) * step))
++    lum = base.convert("L").point(lambda v: int(round((0.16 + 0.84 * v / 255) * (levels - 1)) * step))
+     alpha = small.getchannel("A").point(lambda a: 255 if a > 100 else 0)
+     return lum, alpha
+ 
+ 
+ @lru_cache(None)
+ def halfblock(expr: str, crop: str, max_w: int, max_h: int, px: int = 4, levels: int = 8,
+-              tint: str = "blue") -> Image.Image:
+-    lum, alpha = halfblock_lum(expr, crop, max_w, max_h, px, levels)
++              tint: str = "blue", contrast: float = 1.0) -> Image.Image:
++    lum, alpha = halfblock_lum(expr, crop, max_w, max_h, px, levels, contrast)
+     size = (lum.width * px, lum.height * px)
+     lum = lum.resize(size, Image.NEAREST)
+     alpha = ImageChops.multiply(alpha.resize(size, Image.NEAREST), grid_mask(size[0], size[1], px))
+diff --git a/macos/check_av_sync.py b/macos/check_av_sync.py
+new file mode 100644
+index 0000000..e7f6441
+--- /dev/null
++++ b/macos/check_av_sync.py
+@@ -0,0 +1,84 @@
++#!/usr/bin/env python3
++"""逐帧 A/V 校验：把成片的音轨和画面事件逐项对齐。
++
++    python macos/check_av_sync.py out/film.mp4 input/song.mp3 film/pv_dsh_frontend_20260927/chime_g.wav
++
++做四件事：
++ 1. 成片音轨 vs 「应该生成的混音」——相关性与样本级偏移（应为 0 样本）
++ 2. 成片音轨 vs 作者参考包络（wave_rms_1ms.npy）——中位偏移
++ 3. 画面事件落点：HARD_CUT / 钟声 / 滑入 三个设计时刻，检查对应帧是否精确跳变
++ 4. 歌词带变化 × 音频 onset 的互相关（全片 + 每 10 秒），确认零漂移
++"""
++from __future__ import annotations
++
++import subprocess
++import sys
++from pathlib import Path
++
++import numpy as np
++
++SR = 48000
++
++
++def decode(path: Path, extra: list[str] | None = None) -> np.ndarray:
++    cmd = ["ffmpeg", "-v", "error", "-i", str(path), *([] if extra else ["-ac", "1", "-ar", str(SR)]),
++           "-f", "f32le", "pipe:1"]
++    raw = subprocess.run(cmd, capture_output=True, check=True).stdout
++    return np.frombuffer(raw, dtype=np.float32).astype(np.float64)
++
++
++def best_lag(a: np.ndarray, b: np.ndarray, maxlag: int, step: int) -> tuple[int, float]:
++    m = min(len(a), len(b))
++    best = (0, -2.0)
++    for lag in range(-maxlag, maxlag + 1, step):
++        x = a[max(0, lag): m + min(0, lag)]
++        y = b[max(0, -lag): m + min(0, -lag)]
++        k = min(len(x), len(y))
++        if k < SR:
++            continue
++        c = float(np.corrcoef(x[:k], y[:k])[0, 1])
++        if c > best[1]:
++            best = (lag, c)
++    return best
++
++
++def main() -> int:
++    film = Path(sys.argv[1])
++    song = Path(sys.argv[2]) if len(sys.argv) > 2 else None
++    chime = Path(sys.argv[3]) if len(sys.argv) > 3 else None
++
++    audio = decode(film)
++    print(f"[1] 成片音轨 {len(audio)/SR:.3f}s")
++
++    if song and chime:
++        # 按 build.py 的滤镜重建“应该的混音”
++        mix = subprocess.run(
++            ["ffmpeg", "-v", "error", "-i", str(song), "-i", str(chime), "-filter_complex",
++             "[0:a]atrim=0:211.9,asetpts=PTS-STARTPTS[s];[1:a]adelay=207873|207873[c];"
++             "[s][c]amix=inputs=2:duration=first:normalize=0[a]", "-map", "[a]",
++             "-ac", "1", "-ar", str(SR), "-f", "f32le", "pipe:1"],
++            capture_output=True, check=True).stdout
++        want = np.frombuffer(mix, dtype=np.float32).astype(np.float64)
++        lag, corr = best_lag(audio, want, 960, 48)
++        print(f"[2] 成片音轨 vs 应为混音：lag {lag} 样本（{lag/SR*1000:+.1f} ms），相关 {corr:.6f}")
++        print("    → 0 样本即表示封装没有引入偏移")
++
++    # 3) 画面事件：用逐帧亮度差找跳变
++    W, H = 320, 180
++    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(film), "-vf", f"scale={W}:{H}",
++                          "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
++                         capture_output=True, check=True).stdout
++    fr = np.frombuffer(raw, dtype=np.uint8).reshape(-1, H, W).astype(np.float32)
++    mean = fr.mean(axis=(1, 2))
++    diff = np.abs(np.diff(fr, axis=0)).mean(axis=(1, 2))
++    print(f"[3] 画面 {len(fr)} 帧")
++    for name, t in (("HARD_CUT", 207.083), ("钟声/光标", 207.874), ("滑入", 208.3125)):
++        f = int(round(t * 24))
++        lo, hi = max(0, f - 3), min(len(diff), f + 4)
++        print(f"    {name} 设计 {t:.4f}s（帧 {f}）：邻域帧差 {[round(float(x),1) for x in diff[lo:hi]]}"
++              f"  亮度 {[round(float(x),1) for x in mean[lo:hi]]}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/macos/check_song_alignment.py b/macos/check_song_alignment.py
+new file mode 100644
+index 0000000..ebe7437
+--- /dev/null
++++ b/macos/check_song_alignment.py
+@@ -0,0 +1,85 @@
++#!/usr/bin/env python3
++"""量一下你的歌曲相对作者参考轨偏了多少毫秒。
++
++片子的每一个镜头、每一句词的起音，都是对着作者那份 320 kbps MP3 定死的。
++你自己的拷贝（不同平台、不同压缩、片头静音长短不同）常常整体早/晚几十毫秒，
++在 24 fps 下 42 ms 就是一帧——对齐与否肉眼看得出来。
++
++本仓库自带作者的 1 ms 响度包络：film/pv_dsh_frontend_20260927/wave_rms_1ms.npy。
++这里解出你的 input/song.mp3 的同一包络，取 12 个强瞬态点做互配，给出中位偏移。
++
++    python macos/check_song_alignment.py                     # 检查 input/song.mp3
++    python macos/check_song_alignment.py path/to/other.mp3   # 检查别的文件
++
++输出 `median delta: +127 ms` 表示你的音频整体晚 127 ms，可用：
++
++    ffmpeg -i input/song.flac -af "atrim=start=0.127,asetpts=PTS-STARTPTS,apad=whole_dur=211.913" \\
++           -c:a libmp3lame -b:a 320k -ar 44100 -ac 2 input/song.mp3
++
++把它拉回来（|delta| < 10 ms 就不必动）。
++"""
++from __future__ import annotations
++
++import subprocess
++import sys
++from pathlib import Path
++
++import numpy as np
++
++ROOT = Path(__file__).resolve().parents[1]
++REF = ROOT / "film/pv_dsh_frontend_20260927/wave_rms_1ms.npy"
++
++
++def envelope(path: Path, sr: int = 48000) -> np.ndarray:
++    raw = subprocess.run(
++        ["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "1", "-ar", str(sr), "pipe:1"],
++        capture_output=True, check=True).stdout
++    x = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
++    hop = sr // 1000
++    n = len(x) // hop
++    return np.sqrt((x[: n * hop].reshape(n, hop) ** 2).mean(axis=1))
++
++
++def main() -> int:
++    song = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "input/song.mp3"
++    if not song.exists():
++        print(f"找不到 {song}")
++        return 1
++    if not REF.exists():
++        print(f"找不到参考包络 {REF}")
++        return 1
++
++    ref = np.load(REF).astype(np.float64)
++    env = envelope(song)
++    print(f"song : {song}")
++    print(f"len  : {len(env) / 1000:.3f} s   (参考 {len(ref) / 1000:.3f} s)")
++
++    # 12 个强瞬态点（响度上升最陡的位置），在 ±400 ms 内找本地峰值
++    d = np.diff(ref[: min(len(ref), 200000) - 1])
++    idx = sorted(np.argsort(d)[-40:])
++    picks: list[int] = []
++    for i in idx:
++        if picks and i - picks[-1] < 2000:
++            continue
++        picks.append(int(i))
++    picks = picks[:12]
++
++    offs = []
++    for p in picks:
++        a, b = max(0, p - 50), min(len(env), p + 400)
++        if b <= a:
++            continue
++        pk = a + int(np.argmax(env[a:b]))
++        offs.append(pk - p)
++        print(f"  ref {p:7d} ms -> song {pk:7d} ms  delta {pk - p:+4d} ms")
++
++    arr = np.array(offs)
++    med = int(np.median(arr))
++    print(f"\nmedian delta: {med:+d} ms   (|delta| < 10 ms 视为已对齐；42 ms = 1 帧)")
++    if abs(med) >= 10:
++        print(f"建议裁/补 {abs(med) / 1000:.3f} s，见本文件顶部注释里的 ffmpeg 命令。")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/macos/make_thanks_card.py b/macos/make_thanks_card.py
+new file mode 100644
+index 0000000..40e4a31
+--- /dev/null
++++ b/macos/make_thanks_card.py
+@@ -0,0 +1,137 @@
++import sys, os
++sys.path.insert(0, "film/tui_pv_world_execute_20260926")
++os.environ.setdefault("TUI_PALETTE", "deepsea")
++import numpy as np
++from PIL import Image, ImageDraw
++import tuikit as tk
++
++W, H = tk.W, tk.H
++BG = tk.BG
++MONO  = lambda s: tk.font(tk.F_MONO, s)
++MONOB = lambda s: tk.font(tk.F_MONO_B, s)
++HEAD  = lambda s: tk.font(tk.F_HEAD, s)
++BANNER= lambda s: tk.font(tk.F_BANNER, s)
++CJK   = lambda s: tk.font(tk.F_CJK, s)
++
++im = Image.new("RGB", (W, H), BG)
++d = ImageDraw.Draw(im)
++
++# ---------- header ----------
++d.text((24, 10), "WORLD.EXECUTE(ME);", font=MONOB(15), fill=tk.amb(0.95))
++d.text((212, 10), "denia@xingju:~$", font=MONO(14), fill=tk.blue(0.8))
++# waveform window
++env = np.load("film/pv_dsh_frontend_20260927/wave_rms_1ms.npy").astype(float)
++t0 = 165_000
++seg = env[t0:t0+2400]
++xs = np.linspace(392, 890, len(seg))
++amp = (seg - seg.min()) / (seg.max() - seg.min() + 1e-9)
++bars = 168
++step = max(1, len(seg) // bars)
++for i in range(bars):
++    chunk = seg[i*step:(i+1)*step]
++    if not len(chunk): break
++    v = float((chunk.mean() - seg.min()) / (seg.max() - seg.min() + 1e-9))
++    x = 392 + i * 3
++    hgt = 1 + int(v * 9)
++    d.line([(x, 20 - hgt), (x, 20 + hgt)], fill=tk.amb(0.45 + 0.4 * v), width=1)
++d.text((916, 10), "· THANKS 00:00.0 / 03:32", font=MONO(13), fill=tk.amb(0.85))
++d.text((1156, 10), "RUNNING", font=MONOB(13), fill=tk.amb(0.9))
++
++# ---------- left: chat window ----------
++tk.box(d, 24, 44, 390, 608, "denia web", 0.62, spinner=0.15)
++# avatar
++av = Image.open("film/third_party_references/whale_maid_expanded_20260926/expressions/whale-cheerful.webp").convert("RGBA")
++bgv = Image.new("RGBA", av.size, (26, 8, 20, 255)); bgv.alpha_composite(av)
++head = bgv.convert("RGB").crop((286, 108, 662, 484)).resize((60, 60), Image.Resampling.LANCZOS)
++from PIL import ImageEnhance as _IE
++head = _IE.Contrast(head).enhance(1.18)
++im.paste(head, (40, 70))
++d.rectangle([40, 70, 99, 129], outline=tk.mix(tk.amb(1), 0.35))
++d.text((112, 74), "达妮娅", font=CJK(17), fill=tk.amb(0.95))
++d.ellipse([112, 100, 118, 106], fill=(90, 200, 110))
++d.text((122, 96), "在线", font=CJK(13), fill=tk.amb(0.75)); d.text((158, 96), "· Denia-3.3-Flash", font=MONO(12), fill=tk.amb(0.7))
++
++# her message
++bub = (40, 150, 374, 250)
++d.rounded_rectangle(bub, radius=10, fill=tk.mix(tk.BLUE_LO, 1.0))
++txt = ["谢谢你，把这一切开源。", "没有你的仓库，就没有这一版。"]
++yy = 166
++for line in txt:
++    d.text((54, yy), line, font=CJK(15), fill=tk.amb(0.95)); yy += 26
++d.text((54, 214), "23:59", font=MONO(11), fill=tk.amb(0.5))
++
++# composer
++d.rounded_rectangle([40, 300, 374, 400], radius=12, outline=tk.mix(tk.amb(1), 0.35))
++d.text((54, 316), "发消息或创建任务，/ 调用指令，@ 文件…", font=CJK(13), fill=tk.amb(0.45))
++d.ellipse([344, 352, 366, 374], fill=tk.blue(0.75))
++d.text((350, 356), "↑", font=MONOB(13), fill=BG)
++d.text((54, 362), "Denia-3.3-Flash", font=MONO(12), fill=tk.amb(0.7))
++
++# ---------- centre: thanks.md ----------
++tk.box(d, 404, 44, 1170, 608, "thanks.md", 0.7, spinner=0.4)
++d.text((440, 90), "THANKS", font=HEAD(58), fill=tk.blue(0.95))
++d.text((440, 168), "to", font=MONO(16), fill=tk.amb(0.6))
++d.text((480, 160), "MisakaZentai", font=MONOB(26), fill=tk.amb(0.98))
++d.text((440, 206), "github.com/MisakaZentai/world-execute-me-dsh-pv", font=MONO(15), fill=tk.blue(0.85))
++d.line([(440, 236), (1136, 236)], fill=tk.mix(tk.amb(1), 0.35), width=1)
++
++rows = [
++    ("code",     "MIT"),
++    ("art",      "CC BY-NC-SA 4.0"),
++    ("music",    "Mili - world.execute(me);"),
++    ("stack",    "Python · Pillow · Playwright · ffmpeg"),
++    ("rebuild",  "macOS / Apple Silicon · 4968 screenshots · 5086 frames"),
++]
++yy = 258
++for k, v in rows:
++    d.text((440, yy), f"{k:<10}", font=MONO(14), fill=tk.amb(0.55))
++    d.text((560, yy), v, font=MONO(14), fill=tk.amb(0.92))
++    yy += 30
++
++d.line([(440, yy + 6), (1136, yy + 6)], fill=tk.mix(tk.amb(1), 0.3), width=1)
++d.text((440, yy + 26), "这一版是同人二次创作，原片的一切功劳属于作者。", font=CJK(15), fill=tk.blue(0.8))
++d.text((440, yy + 56), "everything that made this possible started as their commit.", font=MONO(14), fill=tk.amb(0.75))
++
++for i, line in enumerate(["$ git clone https://github.com/MisakaZentai/world-execute-me-dsh-pv",
++                          "$ python build.py all"]):
++    d.text((440, yy + 96 + i * 24), line, font=MONO(13), fill=tk.amb(0.55))
++
++# 半块字符人像：片子里她的标志性画法
++fig = tk.halfblock("cheerful", "bust", 220, 104, 6, contrast=1.8)
++fx, fy = 52, 430
++im.paste(fig, (fx, fy), fig)
++d = ImageDraw.Draw(im)
++d.text((fx, fy + fig.height + 8), "her, as the film draws her", font=MONO(11), fill=tk.amb(0.45))
++d.text((fx + 30, fy - 26), "4968 screenshots · 5086 frames", font=MONO(11), fill=tk.amb(0.5))
++
++# ---------- right: ops ----------
++tk.box(d, 1180, 44, 1268, 608, "ops", 0.6)
++ops = ["THANKS", "REPO", "LICENSE", "CREDITS", "CLONE", "BUILD", "RENDER", "VERIFY",
++       "THANKS", "REPO", "LICENSE", "CREDITS", "CLONE", "BUILD", "RENDER", "VERIFY",
++       "THANKS", "REPO", "LICENSE", "CREDITS", "CLONE", "BUILD"]
++yy = 60
++for i, o in enumerate(ops):
++    hot = i == 0
++    d.text((1192, yy), o, font=MONO(12), fill=tk.amb(0.4) if not hot else tk.amb(0.95))
++    if hot:
++        d.rectangle([1190, yy - 2, 1258, yy + 15], outline=tk.amb(0.75))
++    yy += 24
++
++# ---------- bottom band ----------
++tk.box(d, 24, 616, 1256, 680, "stdout · tokens", 0.62, spinner=0.7)
++d.text((40, 630), ">", font=HEAD(20), fill=tk.amb(0.6))
++d.text((62, 632), "谢谢", font=CJK(17), fill=tk.blue(0.9))
++d.text((112, 632), "MisakaZentai", font=MONOB(16), fill=tk.amb(0.95))
++for i, (tx, col) in enumerate([("感谢开源", tk.amb(0.5)), ("MIT", tk.amb(0.4)), ("CC BY-NC-SA", tk.amb(0.4))]):
++    d.text((320 + i * 150, 636), tx, font=MONO(12) if i else CJK(13), fill=col)
++
++# ---------- footer ----------
++credit = ("角色 溟月 © 上善无形 / 女仆版 ZipZipPipe / 立绘·表情 dsh-deep-whale, dsh-whale-galgame (CC BY-NC-SA 4.0)"
++          " · Music: Mili - world.execute(me); · 原片 © MisakaZentai · 非官方同人作品")
++d.text((24, 698), credit, font=CJK(11), fill=tk.amb(0.42))
++
++out = tk.post(im, None, trail=0.0, bloom=0.35)
++out.save("/Users/zeh/Documents/视频制作/试片-粉发角色/致谢-MisakaZentai.png")
++big = out.resize((3840, 2160), Image.Resampling.NEAREST)
++big.save("/Users/zeh/Documents/视频制作/试片-粉发角色/致谢-MisakaZentai-4K.png")
++print("ok", out.size, big.size)
+diff --git a/macos/make_thanks_card_bw.py b/macos/make_thanks_card_bw.py
+new file mode 100644
+index 0000000..a98646f
+--- /dev/null
++++ b/macos/make_thanks_card_bw.py
+@@ -0,0 +1,67 @@
++#!/usr/bin/env python3
++"""致谢卡（白字黑底极简版）——与成片同字族，去配色、去装饰。
++
++    python macos/make_thanks_card_bw.py
++"""
++from __future__ import annotations
++
++import os
++import sys
++
++from PIL import Image, ImageDraw
++
++sys.path.insert(0, "film/tui_pv_world_execute_20260926")
++os.environ.setdefault("TUI_PALETTE", "deepsea")
++import tuikit as tk
++
++W, H = 1280, 720
++MONO = lambda s: tk.font(tk.F_MONO, s)
++MONOB = lambda s: tk.font(tk.F_MONO_B, s)
++HEAD = lambda s: tk.font(tk.F_HEAD, s)
++CJK = lambda s: tk.font(tk.F_CJK, s)
++
++im = Image.new("RGB", (W, H), (0, 0, 0))
++d = ImageDraw.Draw(im)
++
++
++def center(y, text, font, fill, tracking=0):
++    if tracking:
++        text = (" " * tracking).join(list(text))
++    w = d.textlength(text, font=font)
++    d.text(((W - w) / 2, y), text, font=font, fill=fill)
++    return y
++
++
++# 小标
++center(196, "T H A N K S", MONO(18), (110, 110, 110))
++center(228, "致谢", CJK(22), (140, 140, 140))
++
++# 主名
++center(276, "MisakaZentai", MONOB(64), (240, 240, 240))
++
++# 仓库
++center(372, "github.com/MisakaZentai/world-execute-me-dsh-pv", MONO(19), (150, 150, 150))
++
++# 分隔线
++d.line([(W / 2 - 260, 424), (W / 2 + 260, 424)], fill=(58, 58, 58), width=1)
++
++# 许可与说明
++center(452, "code MIT    ·    art CC BY-NC-SA 4.0    ·    music Mili", MONO(15), (128, 128, 128))
++center(486, "原片的一切功劳属于作者。这一版是同人二次创作。", CJK(16), (168, 168, 168))
++
++# 页脚（中英混排：中文用 CJK 字体，英文用等宽）
++def center_mixed(y, parts):
++    widths = [d.textlength(t, font=f) for t, f, _ in parts]
++    x = (W - sum(widths)) / 2
++    for (t, f, c), w in zip(parts, widths):
++        d.text((x, y), t, font=f, fill=c)
++        x += w
++
++center_mixed(636, [("非官方同人作品", CJK(13), (86, 86, 86)),
++                   ("   ·   unofficial fan work", MONO(13), (86, 86, 86))])
++
++out = "/Users/zeh/Documents/视频制作/试片-粉发角色/致谢-MisakaZentai-白字黑底.png"
++im.save(out)
++big = im.resize((W * 3, H * 3), Image.Resampling.NEAREST)
++big.save(out.replace(".png", "-4K.png"))
++print("ok", im.size, big.size)
+diff --git a/macos/prepare_character.py b/macos/prepare_character.py
+new file mode 100644
+index 0000000..8ccdc3d
+--- /dev/null
++++ b/macos/prepare_character.py
+@@ -0,0 +1,137 @@
++#!/usr/bin/env python3
++"""把一张带背景的插画做成 PV 管线能吃的角色素材（冒烟用）。
++
++产出：
++  cutout.png   去掉背景的 RGBA，裁到角色外接框（保留主要连通块）
++  sprite.png   935×1682 的立绘画布：头部落在上半部，供 tuikit.sprite_src 的 face/bust/upper 裁剪使用
++  dancer.png   420×540 全身画布：脚线位置放在 FOOT_Y，供 placeholder_h3 的 feet()/trace 使用
++
++用法：
++  python prepare_character.py 源图.jpg 输出目录
++"""
++from __future__ import annotations
++
++import sys
++from collections import deque
++from pathlib import Path
++
++import numpy as np
++from PIL import Image, ImageDraw, ImageFilter
++
++BG_TOL = 26          # 与背景色的 Euclidean 距离阈值
++MIN_AREA = 1500      # 小于这个面积的连通块丢弃（0.25 缩放下）
++
++SPRITE_CANVAS = (935, 1682)
++DANCER_CANVAS = (420, 540)
++DANCER_FOOT_Y = 528
++
++
++def estimate_bg(im: Image.Image) -> np.ndarray:
++    a = np.asarray(im.convert("RGB"), dtype=np.float32)
++    h, w, _ = a.shape
++    edge = np.concatenate([
++        a[:3].reshape(-1, 3), a[-3:].reshape(-1, 3),
++        a[:, :3].reshape(-1, 3), a[:, -3:].reshape(-1, 3)])
++    return np.median(edge, axis=0)
++
++
++def cutout(im: Image.Image) -> Image.Image:
++    rgb = np.asarray(im.convert("RGB"), dtype=np.float32)
++    bg = estimate_bg(im)
++    dist = np.sqrt(((rgb - bg) ** 2).sum(axis=2))
++    fg = dist > BG_TOL
++
++    # 从边框洪泛：与背景色接近且连通到边缘的像素 = 真背景
++    h, w = fg.shape
++    seen = np.zeros((h, w), bool)
++    q: deque[tuple[int, int]] = deque()
++    for x in range(w):
++        for y in (0, h - 1):
++            if not fg[y, x] and not seen[y, x]:
++                seen[y, x] = True; q.append((y, x))
++    for y in range(h):
++        for x in (0, w - 1):
++            if not fg[y, x] and not seen[y, x]:
++                seen[y, x] = True; q.append((y, x))
++    while q:
++        y, x = q.popleft()
++        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
++            ny, nx = y + dy, x + dx
++            if 0 <= ny < h and 0 <= nx < w and not seen[ny, nx] and not fg[ny, nx]:
++                seen[ny, nx] = True; q.append((ny, nx))
++    alpha = np.where(seen, 0, 255).astype(np.uint8)
++
++    # 连通过滤（0.25 缩放上做，够快）
++    small = Image.fromarray(alpha).resize((w // 4, h // 4), Image.Resampling.NEAREST)
++    m = np.asarray(small) > 127
++    sh, sw = m.shape
++    lab = np.zeros((sh, sw), np.int32); cur = 0
++    keep = np.zeros_like(m)
++    for y0 in range(sh):
++        for x0 in range(sw):
++            if m[y0, x0] and lab[y0, x0] == 0:
++                cur += 1
++                comp = deque([(y0, x0)]); lab[y0, x0] = cur; pts = []
++                while comp:
++                    y, x = comp.popleft(); pts.append((y, x))
++                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
++                        ny, nx = y + dy, x + dx
++                        if 0 <= ny < sh and 0 <= nx < sw and m[ny, nx] and lab[ny, nx] == 0:
++                            lab[ny, nx] = cur; comp.append((ny, nx))
++                xs = [p[1] for p in pts]
++                if len(pts) >= MIN_AREA and 0.08 * sw < sum(xs) / len(xs) < 0.92 * sw:
++                    for y, x in pts:
++                        keep[y, x] = True
++    keep_big = np.asarray(Image.fromarray((keep * 255).astype(np.uint8))
++                          .resize((w, h), Image.Resampling.NEAREST)) > 127
++    alpha = np.where(keep_big, alpha, 0).astype(np.uint8)
++
++    out = Image.fromarray(np.dstack([np.asarray(im.convert("RGB")), alpha]), "RGBA")
++    # 收边：轻微收缩再羽化，去掉背景色描边
++    a = out.getchannel("A").filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(0.8))
++    out.putalpha(a)
++    bbox = out.getchannel("A").point(lambda v: 255 if v > 24 else 0).getbbox()
++    return out.crop(bbox)
++
++
++def on_canvas(fig: Image.Image, canvas: tuple[int, int], scale: float, cx: float, bottom: float) -> Image.Image:
++    w, h = canvas
++    nw, nh = max(1, round(fig.width * scale)), max(1, round(fig.height * scale))
++    f = fig.resize((nw, nh), Image.Resampling.LANCZOS)
++    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
++    out.alpha_composite(f, (round(cx - nw / 2), round(bottom - nh)))
++    return out
++
++
++def main() -> int:
++    src = Path(sys.argv[1]); dst = Path(sys.argv[2]); dst.mkdir(parents=True, exist_ok=True)
++    im = Image.open(src).convert("RGB")
++    fig = cutout(im)
++    print(f"cutout: {fig.size}  (源 {im.size})")
++    fig.save(dst / "cutout.png")
++
++    # 立绘画布：头部占上半部，宽度吃满 0.86
++    sw, sh = SPRITE_CANVAS
++    sprite = on_canvas(fig, SPRITE_CANVAS, sw * 0.86 / fig.width, sw / 2, fig.height * (sw * 0.86 / fig.width))
++    sprite.save(dst / "sprite.png")
++    print("sprite:", sprite.size)
++
++    # 舞者画布：底部对齐脚线，高度约 408
++    dw, dh = DANCER_CANVAS
++    dancer = on_canvas(fig, DANCER_CANVAS, 408 / fig.height, dw / 2, DANCER_FOOT_Y)
++    dancer.save(dst / "dancer.png")
++    print("dancer:", dancer.size)
++
++    # 预览：三张拼一张，黑底，方便看透明通道
++    pv = Image.new("RGB", (sw + dw + 60, max(sh, dh) + 20), (8, 10, 16))
++    pv.paste(sprite, (0, 10), sprite)
++    pv.paste(dancer, (sw + 30, 10), dancer)
++    pv.paste(fig.resize((min(fig.width, 420), round(fig.height * min(fig.width, 420) / fig.width))),
++             (sw + 30, 10), fig.resize((min(fig.width, 420), round(fig.height * min(fig.width, 420) / fig.width))))
++    pv.save(dst / "preview_assets.png")
++    print("preview:", dst / "preview_assets.png")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/run.sh b/run.sh
+new file mode 100755
+index 0000000..9d2705a
+--- /dev/null
++++ b/run.sh
+@@ -0,0 +1,28 @@
++#!/bin/zsh
++# 一键出片（macOS 复刻版）
++#
++#   ./run.sh            # 等价于 python build.py all
++#   ./run.sh check      # 只做环境检查
++#   ./run.sh pages      # 只重做网页截图
++#   ./run.sh render     # 只重渲染（复用已有截图）
++#   ./run.sh all --4k   # 另出 3840x2160
++set -euo pipefail
++cd "$(dirname "$0")"
++
++if [[ ! -f pv-env.sh ]]; then
++  echo "缺少 pv-env.sh（字体环境变量），先跑 ./setup-macos.sh" >&2
++  exit 1
++fi
++source ./pv-env.sh
++
++step="${1:-all}"
++shift || true
++
++echo "== step: $step =="
++echo "   mono   = $PV_F_MONO"
++echo "   mono_b = $PV_F_MONO_B"
++echo "   cjk    = $PV_F_CJK"
++echo "   sym    = $PV_F_SYM"
++echo "   song   = $(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 input/song.mp3 2>/dev/null || echo MISSING) s"
++
++exec .venv/bin/python build.py "$step" "$@"
+diff --git a/setup-macos.sh b/setup-macos.sh
+new file mode 100755
+index 0000000..f6f6bdc
+--- /dev/null
++++ b/setup-macos.sh
+@@ -0,0 +1,60 @@
++#!/bin/zsh
++# macOS 环境装配（幂等，可重复跑）
++#
++#   ./setup-macos.sh          # 装依赖 + 生成 pv-env.sh
++#   ./setup-macos.sh --fonts  # 只重装字体并刷新 pv-env.sh
++#
++# 需要：Homebrew（brew）、uv（或 brew install python@3.12）、Node 20+、ffmpeg。
++set -euo pipefail
++cd "$(dirname "$0")"
++
++need() { command -v "$1" >/dev/null 2>&1 || { echo "缺少 $1，请先安装" >&2; exit 1; }; }
++need brew
++need node
++need npm
++need ffmpeg
++need ffprobe
++
++if [[ "${1:-}" != "--fonts" ]]; then
++  echo "== Python 3.12 venv =="
++  if ! command -v uv >/dev/null 2>&1; then
++    echo "未找到 uv，尝试 brew install uv"
++    brew install uv
++  fi
++  [[ -d .venv ]] || uv venv --python 3.12 .venv
++  uv pip install --python .venv/bin/python -q pillow numpy
++  .venv/bin/python -V
++
++  echo "== Playwright =="
++  npm install --no-audit --no-fund
++  npx playwright install chromium
++fi
++
++echo "== 字体 =="
++# 等宽：JetBrains Mono（OFL）。需要 Consolas 的 0.55 em → 这个是 0.6 em，宽约 9%，见 docs/FONTS.md
++if [[ ! -f "$HOME/Library/Fonts/JetBrainsMono-Regular.ttf" ]]; then
++  HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask font-jetbrains-mono
++fi
++
++cat > pv-env.sh <<'EOF'
++set -euo pipefail
++FONT_DIR="$HOME/Library/Fonts"
++ASSET_ROOT="/System/Library/AssetsV2/com_apple_MobileAsset_Font8"
++export PV_F_MONO="$(find "$FONT_DIR" -maxdepth 1 -type f -name 'JetBrainsMono-Regular.ttf' -print -quit)"
++export PV_F_MONO_B="$(find "$FONT_DIR" -maxdepth 1 -type f -name 'JetBrainsMono-Bold.ttf' -print -quit)"
++export PV_F_CJK="$(find "$ASSET_ROOT" -path '*/AssetData/PingFang.ttc' -print -quit)"
++export PV_F_SYM="/System/Library/Fonts/Supplemental/STIXTwoMath.otf"
++test -f "$PV_F_MONO"
++test -f "$PV_F_MONO_B"
++test -f "$PV_F_CJK"
++test -f "$PV_F_SYM"
++EOF
++
++source ./pv-env.sh
++echo "   mono   = $PV_F_MONO"
++echo "   mono_b = $PV_F_MONO_B"
++echo "   cjk    = $PV_F_CJK"
++echo "   sym    = $PV_F_SYM"
++
++echo
++echo "完成。下一步：把歌曲放进 input/song.mp3（见 README-MACOS.md），然后 ./run.sh"
