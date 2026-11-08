@@ -26,6 +26,19 @@
 | `docs/05-逐帧AV校验.md` | 封装偏移、事件帧落点、全片漂移 |
 | `docs/06-交付清单.md` | 交付物规格与 4K 校验记录 |
 | `docs/07-macOS复刻说明.md` | 在原工程上跑通 macOS 的具体做法与踩坑表 |
+| `patches/2026-11-08-达妮娅改造.patch` | 全部源码改动（40 文件 / 2219 行），已验证可在上游 master 干净应用 |
+
+## 怎么复现这次的改造
+
+```bash
+git clone https://github.com/MisakaZentai/world-execute-me-dsh-pv.git
+cd world-execute-me-dsh-pv
+git apply /path/to/patches/2026-11-08-达妮娅改造.patch
+# 之后照 docs/07-macOS复刻说明.md 装配环境、放素材、出片
+```
+
+补丁覆盖：macOS 移植、角色素材取景、人格文案、品牌清除与鸣潮化、樱粉配色。
+**不含**素材与生成物（插画、字体、歌曲、截图、成片），那些按文档自行准备。
 
 ## 技能里有什么
 
